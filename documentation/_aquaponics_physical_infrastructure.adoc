@@ -1,0 +1,20 @@
+// ============================================================================
+// _aquaponics_physical_infrastructure.adoc
+// ============================================================================
+= Aquaponics - Physical Infrastructure
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectnumlevels: 2
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:hide-uri-scheme: true
+:description: Documents the real physical Aquaponics installation, including the biological system, water circuit, pumps, aeration, lighting, relays, sensors, electrical infrastructure, networking, power, fail-safe behaviour, and as-built hardware information.
+:toc-title: Table of contents
+:figure-caption:
+
+include::ap_physical_infrastructure.adoc[]

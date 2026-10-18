@@ -1,0 +1,20 @@
+// ============================================================================
+// _aquaponics_development_and_operations.adoc
+// ============================================================================
+= Aquaponics - Development and Operations
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectnumlevels: 2
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:hide-uri-scheme: true
+:description: Defines how the Aquaponics controller is developed, tested, reviewed, packaged, released, deployed, operated, monitored, diagnosed, upgraded, and recovered while preserving offline autonomy and production safety.
+:toc-title: Table of contents
+:figure-caption:
+
+include::ap_development_and_operations.adoc[]

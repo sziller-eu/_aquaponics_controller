@@ -1,0 +1,2167 @@
+// ============================================================================
+// ap_development_and_operations.adoc
+// ============================================================================
+
+== Development and Operations
+
+=== Purpose
+
+This document defines how the Aquaponics software is:
+
+* planned;
+* implemented;
+* tested;
+* reviewed;
+* released;
+* deployed;
+* operated;
+* diagnosed;
+* recovered.
+
+The development process shall support both human developers and AI coding agents.
+
+Development and operational procedures shall preserve the architectural invariants defined by the project.
+
+In particular:
+
+* the Aquaponics Engine is the authoritative controller;
+* the Engine operates autonomously and continuously;
+* external interfaces do not drive the control loop;
+* state-changing operations use the unified Engine command path;
+* the Engine owns its operational persistence;
+* the API and Engine are separate production processes;
+* production operation does not depend on Internet access;
+* development convenience shall not weaken physical-system safety.
+
+
+=== Development Environment
+
+Primary software development shall occur on a Linux development workstation.
+
+The preferred development environment is Ubuntu or another suitable Debian-family Linux distribution.
+
+The production Raspberry Pi shall not be the normal development workstation.
+
+The production controller shall receive tested, versioned releases.
+
+Development shall not require permanent access to:
+
+* the production Raspberry Pi;
+* the physical aquaponics installation;
+* the Internet;
+* external cloud services.
+
+
+=== Repository Model
+
+The Aquaponics project should initially use two primary software repositories:
+
+* controller repository;
+* mobile application repository.
+
+The controller repository is the authoritative repository for the locally deployed Aquaponics control system.
+
+The mobile application is a separate external client.
+
+
+==== Controller Repository
+
+The controller repository is a public repository owned by the `sziller.eu` GitHub organization.
+
+Its current repository name is:
+
+[source,text]
+----
+_aquaponics_controller
+----
+
+The repository contains the locally deployable controller system.
+
+A conceptual structure is:
+
+[source,text]
+----
+_aquaponics_controller/
+    src/
+        aquaponics_controller/
+            engine/
+            hardware/
+            persistence/
+            runtime/
+            api/
+            cli/
+            composition.py
+
+    web/
+    deployment/
+    tests/
+    documentation/
+    pyproject.toml
+----
+
+Exact directory names may evolve.
+
+Directories shall be created when required by implemented functionality.
+
+The repository shall not be populated with empty abstraction layers merely to mirror this conceptual structure.
+
+The important boundaries are:
+
+* Engine;
+* hardware adapters;
+* persistence;
+* runtime/platform integration;
+* API;
+* administrative CLI;
+* web frontend;
+* production composition;
+* deployment support;
+* tests;
+* documentation.
+
+
+==== Python Source Layout
+
+Python application code should use a `src/` layout.
+
+Conceptually:
+
+[source,text]
+----
+src/
+    aquaponics_controller/
+----
+
+This separates importable production code from:
+
+* repository tooling;
+* tests;
+* documentation;
+* deployment files;
+* generated artifacts.
+
+The Python package structure shall follow architectural responsibilities rather than arbitrary technical grouping.
+
+
+==== Mobile Repository
+
+The mobile application shall use a separate repository.
+
+It has a separate:
+
+* build system;
+* release lifecycle;
+* mobile-platform toolchain;
+* signing process;
+* distribution process.
+
+The mobile application is an API client of the Aquaponics controller.
+
+The mobile application shall not contain controller-domain logic required for physical operation.
+
+
+=== GitHub Project
+
+Development shall be managed using a GitHub Project with a Kanban-style workflow.
+
+The Project should coordinate work across:
+
+* the controller repository;
+* the mobile repository;
+* future closely related Aquaponics repositories where appropriate.
+
+The controller repository is owned by the `sziller.eu` GitHub organization.
+
+Future Aquaponics repositories should normally use the same organizational ownership unless a documented reason requires otherwise.
+
+GitHub is a development, collaboration, source-management, and release-distribution platform.
+
+The production Aquaponics controller shall not depend on GitHub availability during ordinary operation.
+
+
+=== Suggested Project Workflow
+
+A practical workflow is:
+
+[source,text]
+----
+Backlog
+   |
+   v
+Ready
+   |
+   v
+In Progress
+   |
+   v
+Review
+   |
+   v
+Done
+----
+
+Additional states may be introduced if they serve a clear operational purpose.
+
+Avoid process complexity that provides no engineering value.
+
+
+=== Issue-Driven Development
+
+Meaningful development work should normally begin with a GitHub issue.
+
+An issue should identify:
+
+* problem or objective;
+* affected subsystem;
+* architectural constraints;
+* expected behaviour;
+* acceptance criteria;
+* testing requirements;
+* documentation impact.
+
+Large features should be decomposed into parent and child issues when useful.
+
+Implementation work shall not silently expand beyond issue scope merely because adjacent refactoring appears attractive.
+
+
+=== Suggested Project Fields
+
+Useful GitHub Project fields may include:
+
+* Area;
+* Type;
+* Priority;
+* Status;
+* Start date;
+* Target date.
+
+Possible `Area` values include:
+
+* Engine;
+* Hardware;
+* API;
+* Web;
+* Mobile;
+* Persistence;
+* Deployment;
+* Runtime;
+* Documentation;
+* Security.
+
+Possible `Type` values include:
+
+* Feature;
+* Bug;
+* Architecture;
+* Maintenance;
+* Research;
+* Documentation.
+
+
+=== Branching
+
+Work should normally occur on short-lived issue or feature branches.
+
+Branch names should identify the issue or task where practical.
+
+Examples:
+
+[source,text]
+----
+issue/42-water-temperature-adapter
+feature/local-health-endpoint
+fix/startup-db-recovery
+----
+
+The main branch should represent a releasable state.
+
+A permanently divergent production branch should not be introduced without a concrete need.
+
+
+=== Pull Requests
+
+Changes should normally enter the main branch through pull requests.
+
+A pull request should:
+
+* reference the relevant issue;
+* describe the implementation;
+* identify important architectural decisions;
+* document tests performed;
+* identify migration or deployment impact;
+* identify safety impact where applicable;
+* identify documentation changes.
+
+Large unrelated refactors should not be mixed into feature work without justification.
+
+
+=== Definition of Done
+
+A task affecting production behaviour is not complete merely because the nominal path works.
+
+Depending on scope, completion may require:
+
+* implementation;
+* unit tests;
+* integration tests;
+* failure-path tests;
+* architecture tests;
+* documentation;
+* configuration update;
+* deployment update;
+* migration handling;
+* recovery verification;
+* hardware validation.
+
+Safety-related work may require explicit testing of:
+
+* startup;
+* shutdown;
+* restart;
+* partial failure;
+* interrupted execution;
+* unavailable hardware;
+* unavailable network;
+* unavailable API;
+* unavailable persistence.
+
+
+=== Package Management
+
+The Python controller shall be structured as a proper Python project.
+
+`pyproject.toml` shall be used for project metadata and packaging unless a future technical requirement justifies another approach.
+
+Production dependencies shall be:
+
+* explicit;
+* reproducible;
+* declared in project configuration;
+* compatible with the target Raspberry architecture;
+* installable without proprietary infrastructure.
+
+Dependency versions should be sufficiently constrained to support reproducible releases.
+
+The final production Python version shall be selected together with the production Raspberry Pi operating system.
+
+Until that decision is finalized, Python `>=3.11` is an acceptable provisional development baseline.
+
+Development-workstation Python version shall not automatically define the production Python version.
+
+
+=== Dependency Direction
+
+Dependencies shall point inward toward the Engine's domain abstractions.
+
+The Engine shall not depend on:
+
+* API implementation;
+* web frontend;
+* mobile application;
+* concrete GPIO implementation;
+* SHMC;
+* remote services.
+
+Concrete infrastructure implements interfaces required by the Engine.
+
+Conceptually:
+
+[source,text]
+----
+             external systems
+                    |
+                    v
+                   API
+                    |
+                    v
+               Engine ingress
+                    |
+                    v
+                  ENGINE
+                 /      \
+                /        \
+               v          v
+        persistence     hardware
+          adapters       adapters
+----
+
+The Engine defines the domain expectations.
+
+Infrastructure supplies concrete implementations.
+
+
+=== Production Composition
+
+Production dependencies shall be assembled deliberately at an explicit composition boundary.
+
+Conceptually:
+
+[source,text]
+----
+Production composition
+    |
+    +-- Engine
+    +-- production clock
+    +-- local persistence
+    +-- real sensor adapters
+    +-- real actuator adapters
+    +-- production configuration
+----
+
+Only explicitly designated production composition shall normally create real hardware adapters.
+
+A development configuration flag shall not casually convert test code into a real GPIO controller.
+
+
+=== Development Hardware Abstraction
+
+Development on the Ubuntu workstation shall not require physical Raspberry hardware for ordinary domain work.
+
+Hardware interfaces shall therefore have test implementations.
+
+Examples:
+
+[source,text]
+----
+TemperatureSensor
+    +-- DS18B20TemperatureSensor
+    +-- FakeTemperatureSensor
+
+Relay
+    +-- GPIORelay
+    +-- FakeRelay
+----
+
+Fake implementations exist for:
+
+* development;
+* unit tests;
+* integration tests;
+* deterministic failure testing.
+
+They are not a production simulation subsystem.
+
+
+=== Fake Sensor Inputs
+
+A fake sensor may return:
+
+* configured values;
+* scripted sequences;
+* invalid readings;
+* missing readings;
+* stale readings;
+* failure conditions.
+
+Example:
+
+[source,text]
+----
+read 1 -> 22.0
+read 2 -> 22.1
+read 3 -> unavailable
+read 4 -> 28.5
+----
+
+This allows domain behaviour to be tested without physical hardware.
+
+
+=== Fake Actuators
+
+Fake actuators shall not access real GPIO.
+
+They may record commands such as:
+
+[source,text]
+----
+12:03:00 pump -> ON
+12:08:00 pump -> OFF
+----
+
+This allows deterministic assertions about Engine behaviour.
+
+
+=== Test Isolation
+
+Test hardware implementations should normally exist outside the production package where practical.
+
+Production packaging shall not accidentally include or expose a casual mechanism for replacing physical hardware with test hardware.
+
+Test code shall never acquire physical GPIO access merely because a developer executes an ordinary test suite.
+
+
+=== Test Categories
+
+The project shall distinguish several test levels.
+
+
+==== Unit Tests
+
+Unit tests cover isolated:
+
+* domain logic;
+* policies;
+* validation;
+* calculations;
+* state transitions;
+* command semantics;
+* schedule calculations;
+* time handling.
+
+
+==== Integration Tests
+
+Integration tests cover interactions between components.
+
+Examples include:
+
+* Engine and persistence;
+* Engine ingress and command journal;
+* Engine and API transport boundary;
+* command executor and hardware abstraction;
+* startup/recovery components;
+* migrations;
+* configuration loading.
+
+
+==== Architecture Tests
+
+Architecture tests enforce structural invariants.
+
+Examples include:
+
+* Engine domain code does not import API implementation;
+* Engine domain code does not import concrete GPIO adapters;
+* API does not directly access GPIO;
+* API does not manipulate operational database tables;
+* external state-changing paths terminate at Engine ingress;
+* production composition is the normal creator of real hardware adapters;
+* test fakes do not enter the production runtime accidentally.
+
+
+==== Hardware Tests
+
+Hardware tests run deliberately on Raspberry hardware for:
+
+* GPIO;
+* relay control;
+* real sensors;
+* camera access;
+* storage behaviour;
+* watchdog;
+* boot behaviour;
+* power behaviour where safely testable.
+
+Hardware tests shall be clearly separated from ordinary workstation test execution.
+
+
+==== Recovery Tests
+
+Recovery tests exercise realistic failure conditions.
+
+Examples include:
+
+* terminate the Engine process;
+* freeze a test control loop;
+* disconnect a sensor;
+* disconnect the network;
+* terminate the API;
+* interrupt IPC;
+* fill a test filesystem;
+* corrupt a test database;
+* reboot during activity;
+* trigger watchdog recovery;
+* boot without Internet;
+* force repeated Engine startup failure;
+* restore from backup.
+
+The relevant question is:
+
+[IMPORTANT]
+====
+Does the controller return to a safe and useful state after realistic failure?
+====
+
+
+=== Production Composition Testing
+
+Tests shall ensure that production composition uses only approved production implementations.
+
+The production application must not accidentally deploy:
+
+* fake sensors;
+* fake relays;
+* test clocks;
+* test databases;
+* experimental control policies.
+
+Production composition shall be explicit and inspectable.
+
+
+=== Unified Command-Path Development Rule
+
+Any normal feature capable of changing physical or logical operating state shall integrate with the unified Engine command path.
+
+A developer shall not introduce a second execution path for convenience.
+
+Examples of incorrect implementations include:
+
+[source,text]
+----
+API endpoint -> relay adapter directly
+
+CLI command -> GPIO directly
+
+scheduler -> pump directly
+
+policy -> light directly
+----
+
+The intended structure is:
+
+[source,text]
+----
+origin
+  |
+  v
+Engine intent
+  |
+  v
+durable command
+  |
+  v
+Engine executor
+  |
+  v
+hardware adapter
+----
+
+Normal state-changing operations shall use this path regardless of whether they originate from:
+
+* API;
+* CLI;
+* schedule;
+* autonomous control policy;
+* SHMC;
+* AI integration;
+* future management interface.
+
+
+=== Safety-Mechanism Exception
+
+A narrowly scoped low-level safety mechanism may bypass the normal command path only when explicitly permitted by the architecture.
+
+Such an exception shall be:
+
+* safety-motivated;
+* narrowly scoped;
+* explicitly documented;
+* separately tested;
+* observable where technically possible.
+
+A developer shall not classify ordinary control functionality as a safety mechanism merely to bypass the command architecture.
+
+
+=== Durable Command Acceptance
+
+A state-changing operation shall not be treated as accepted merely because:
+
+* HTTP successfully received the request;
+* IPC successfully transported the request;
+* an in-memory queue received a message;
+* a Python function accepted an argument.
+
+A state-changing command is considered accepted only after the Engine has durably recorded it according to command semantics.
+
+Conceptually:
+
+[source,text]
+----
+external request
+      |
+      v
+API receives request
+      |
+      v
+IPC transports intent
+      |
+      v
+Engine validates intent
+      |
+      v
+Engine persists command
+      |
+      v
+COMMAND ACCEPTED
+----
+
+If durable persistence fails, the caller shall not receive a false acceptance result.
+
+
+=== Engine Database Ownership
+
+The Engine owns the operational persistence layer.
+
+External components shall not:
+
+* insert commands directly into database tables;
+* modify operational state directly;
+* use database rows as an actuator-control mechanism;
+* depend on private schema as a supported interface;
+* use direct database access as the normal query interface.
+
+The Engine may internally use the local database for:
+
+* durable command journal;
+* runtime state;
+* measurements;
+* schedules;
+* history;
+* alarms;
+* recovery information.
+
+The database may therefore participate in command execution internally without becoming an external command bus.
+
+
+=== Query Development Rule
+
+Read-only functionality shall use the Engine query surface.
+
+Examples include requests for:
+
+* current logical state;
+* latest known measurement;
+* alarms;
+* health;
+* command status;
+* historical observations.
+
+API and CLI implementations shall not become coupled to SQLite schema details merely because direct SQL appears simpler.
+
+Schema evolution must remain possible without requiring external clients to understand internal persistence.
+
+
+=== Query Versus Active Operation
+
+Contributors shall distinguish a passive query from an operation that causes new physical work.
+
+For example:
+
+[source,text]
+----
+return latest known water temperature
+    -> query
+----
+
+while:
+
+[source,text]
+----
+read physical water-temperature sensor now
+    -> active operation
+    -> command path
+----
+
+The distinction is semantic rather than syntactic.
+
+
+=== Separate Engine and API Services
+
+Development shall assume two independently supervised production processes:
+
+[source,text]
+----
+aquaponics-engine
+aquaponics-api
+----
+
+The Engine is primary.
+
+The API is optional from the perspective of physical control.
+
+Development shall verify that:
+
+* Engine startup does not require API startup;
+* API failure does not stop Engine execution;
+* API restart does not stop Engine execution;
+* Engine restart is independently recoverable;
+* API detects Engine unavailability;
+* API reconnects or recovers after Engine availability returns.
+
+The API shall never become part of the physical life-support control loop.
+
+
+=== Production Dependency Direction
+
+The runtime dependency direction is:
+
+[source,text]
+----
+Web / Mobile / SHMC / AI / external clients
+                  |
+                  v
+                 API
+                  |
+                  | local IPC
+                  v
+                Engine
+                  |
+                  v
+        physical control system
+----
+
+The API depends on the Engine for authoritative control semantics.
+
+The Engine shall not depend on API availability.
+
+
+=== IPC Development Boundary
+
+API-to-Engine communication shall use a defined local IPC abstraction.
+
+The first concrete transport may be selected in a dedicated implementation issue.
+
+A Unix domain socket is a preferred candidate for a single-machine production installation.
+
+Other suitable local IPC mechanisms may be used where justified.
+
+Application code shall not make domain semantics depend on the selected transport.
+
+Changing IPC implementation shall not require redesigning:
+
+* command semantics;
+* command lifecycle;
+* scheduling;
+* autonomous policies;
+* persistence rules;
+* actuator semantics.
+
+Tests should be able to replace transport details without replacing Engine behaviour.
+
+
+=== External-Ingress Processing
+
+External communication shall be processed by the Engine without becoming the driver of the Engine.
+
+Engine ingress shall be:
+
+* non-blocking; or
+* explicitly time-bounded.
+
+A stalled external connection shall not indefinitely stop:
+
+* sensor acquisition;
+* state reconciliation;
+* schedule processing;
+* autonomous-policy evaluation;
+* command execution;
+* persistence;
+* health reporting.
+
+Each control cycle may process:
+
+* a bounded number of incoming requests; or
+* a bounded amount of ingress-processing time.
+
+Additional work may remain queued for later cycles.
+
+
+=== External-Ingress and Backlog Tests
+
+Tests shall verify that:
+
+* a client that connects and then stops responding does not freeze the Engine;
+* malformed requests do not stop autonomous operation;
+* excessive external traffic does not indefinitely starve the control loop;
+* a large pending-command backlog does not indefinitely prevent sensor processing;
+* API failure does not stop Engine operation;
+* IPC failure does not stop local autonomous control.
+
+The central invariant is:
+
+[IMPORTANT]
+====
+External communication is serviced by the Engine.
+
+External communication does not drive the Engine.
+====
+
+
+=== Command Processing Bounds
+
+Command execution shall not monopolize the control loop indefinitely.
+
+Where necessary, command processing shall use bounded:
+
+* work count;
+* execution time;
+* batch size.
+
+Long-running physical operations should generally be represented through state rather than by blocking the entire Engine until completion.
+
+For example:
+
+[source,text]
+----
+bad:
+
+pump_on()
+sleep(300)
+pump_off()
+----
+
+should normally be represented conceptually as:
+
+[source,text]
+----
+command starts pump
+       |
+       v
+state records active operation
+       |
+       v
+normal Engine cycles continue
+       |
+       v
+later due transition stops pump
+----
+
+Exact implementation shall follow domain requirements.
+
+
+=== Command Ordering
+
+When multiple commands are eligible for execution, ordering shall be deterministic.
+
+Execution shall not depend accidentally on:
+
+* database row order;
+* thread scheduling;
+* socket arrival timing;
+* process scheduling;
+* Python container ordering.
+
+The command model shall support explicit ordering information where required.
+
+Possible inputs include:
+
+* command priority;
+* intended execution time;
+* acceptance sequence;
+* command identifier.
+
+The exact priority model shall be introduced deliberately and tested.
+
+
+=== Command Idempotency
+
+Commands that may be retried across process or communication failure shall have deliberate idempotency semantics.
+
+A single logical operation shall not execute multiple times merely because:
+
+* an API client retried;
+* the IPC connection failed after submission;
+* the response was lost;
+* the Engine restarted;
+* schedule evaluation occurred repeatedly.
+
+Where required, commands shall carry:
+
+* stable command identity;
+* occurrence identity;
+* idempotency key;
+* equivalent deterministic identity information.
+
+
+=== Command Acceptance Tests
+
+State-changing command tests shall distinguish:
+
+* request received by API;
+* intent received by Engine;
+* command validated;
+* command durably accepted;
+* command execution started;
+* command execution completed or failed.
+
+A successful HTTP response from a transport layer shall not by itself prove Engine acceptance.
+
+
+=== Command Ordering and Idempotency Tests
+
+Tests shall verify deterministic behaviour when multiple commands become eligible for execution.
+
+Where applicable, tests shall cover:
+
+* equal-time commands;
+* different priorities;
+* retries;
+* duplicate submission;
+* interrupted IPC response;
+* Engine restart;
+* schedule reevaluation.
+
+Tests shall verify that a logical action is not executed twice merely because delivery or acknowledgement was uncertain.
+
+
+=== Crash-Recovery Command Tests
+
+Integration tests shall eventually cover at least:
+
+[source,text]
+----
+command submitted
+    |
+    v
+command durably accepted
+    |
+    v
+Engine terminates
+    |
+    v
+Engine restarts
+    |
+    v
+pending/incomplete command reconciled
+----
+
+Tests shall verify that an accepted command is neither:
+
+* silently lost;
+* blindly duplicated.
+
+Ambiguous physical state shall be reconciled according to actuator and domain semantics.
+
+
+=== Schedule Deduplication Tests
+
+Scheduled-command tests shall cover:
+
+* normal occurrence;
+* delayed loop iteration;
+* Engine restart around occurrence time;
+* repeated schedule evaluation;
+* date/midnight boundary;
+* wall-clock correction where relevant.
+
+One logical scheduled occurrence shall not execute multiple times merely because the Engine evaluated the schedule repeatedly.
+
+
+=== Unified-Origin Tests
+
+Where feasible, the same logical action should be tested through different origins.
+
+For example:
+
+[source,text]
+----
+manual API request
+scheduled occurrence
+autonomous policy decision
+----
+
+shall all reach the same command-executor semantics.
+
+Origin may affect:
+
+* authorization;
+* metadata;
+* priority;
+* audit information.
+
+Origin shall not create a separate physical execution architecture.
+
+
+=== Override Interaction Tests
+
+Manual or administrative overrides shall interact deliberately with autonomous behaviour.
+
+Tests shall verify that active override state does not cause the Engine to continuously generate contradictory autonomous commands.
+
+Examples include:
+
+[source,text]
+----
+manual override -> pump OFF
+autonomous policy -> requests pump ON
+----
+
+The expected behaviour shall be defined by control-policy semantics.
+
+The system shall not rely on command timing races to determine the result.
+
+
+=== Command and Actuator State Tests
+
+Command lifecycle and actuator-operation lifecycle are distinct concepts.
+
+Tests should preserve this distinction.
+
+For example:
+
+[source,text]
+----
+Command:
+    QUEUED
+      |
+      v
+    EXECUTING
+      |
+      v
+Actuator operation:
+    REQUESTED
+      |
+      v
+    COMMAND_SENT
+      |
+      v
+    CONFIRMED / ASSUMED
+      |
+      v
+Command:
+    DONE
+----
+
+Not every actuator supports physical confirmation.
+
+Tests shall reflect actual device capability rather than pretending confirmation exists.
+
+
+=== Maintenance-Mode Hardware Testing
+
+Direct hardware diagnostics shall not compete with the running production Engine.
+
+Hardware tests requiring exclusive actuator access shall document whether they require:
+
+* Engine shutdown;
+* explicit maintenance mode;
+* exclusive hardware lock.
+
+Tests shall never assume that two independent processes may safely drive the same GPIO output concurrently.
+
+
+=== Administrative CLI Development
+
+The local administrative CLI shall reuse supported Engine interfaces.
+
+Normal CLI operations may include:
+
+* status;
+* health;
+* alarms;
+* state inspection;
+* configuration inspection;
+* command inspection;
+* controlled override;
+* maintenance request.
+
+Normal CLI operation shall not independently control GPIO while the Engine is running.
+
+Direct low-level hardware diagnostics require explicit maintenance semantics.
+
+
+=== Architecture Test Requirements
+
+`test_architecture.py` or equivalent architecture tests should eventually verify at least:
+
+* Engine domain code does not import API implementation;
+* Engine domain code does not import concrete hardware adapters;
+* API does not import or operate GPIO adapters;
+* API does not manipulate operational database tables directly;
+* external state-changing paths terminate at Engine ingress;
+* query interfaces do not expose private DB schema as a supported API;
+* production composition is the normal creator of real hardware adapters;
+* fake hardware is not accidentally packaged into production where prohibited.
+
+
+=== Time Abstraction
+
+Domain logic shall not scatter direct wall-clock calls throughout the codebase.
+
+Time-sensitive behaviour shall use defined time abstractions.
+
+The system shall distinguish:
+
+* absolute time;
+* monotonic elapsed duration;
+* schedule interpretation;
+* persisted timestamps.
+
+Tests shall be able to substitute deterministic time.
+
+Typical test clocks may support controlled advancement such as:
+
+[source,text]
+----
+clock.now() -> 08:00
+advance 5 minutes
+clock.now() -> 08:05
+----
+
+This allows deterministic testing of:
+
+* schedules;
+* retries;
+* timeouts;
+* actuator durations;
+* heartbeat age;
+* command due times.
+
+
+=== Release Versioning
+
+Production deployments shall use explicit versioned releases.
+
+A production controller should be identifiable by:
+
+* software version;
+* source commit;
+* build metadata;
+* release metadata.
+
+Example:
+
+[source,text]
+----
+Aquaponics Controller 0.4.1
+Git commit: abc123...
+----
+
+A running production system should make its deployed version observable.
+
+
+=== GitHub Release Model
+
+The preferred lifecycle is:
+
+[source,text]
+----
+Issue
+  |
+  v
+Development Branch
+  |
+  v
+Tests
+  |
+  v
+Pull Request
+  |
+  v
+Main
+  |
+  v
+Version Tag
+  |
+  v
+Release Artifact
+  |
+  v
+Deployment
+----
+
+GitHub may host:
+
+* source;
+* tags;
+* release metadata;
+* release artifacts.
+
+The production controller shall not require GitHub access during ordinary operation.
+
+
+=== Deployment Principle
+
+The Raspberry Pi shall run a deployed release.
+
+It shall not normally run directly from an actively edited Git working tree.
+
+Normal production deployment should not depend on:
+
+[source,text]
+----
+git pull
+----
+
+on the Raspberry.
+
+Git-based deployment may be used temporarily during early development, but it is not the target production model.
+
+
+=== Offline-Capable Deployment
+
+The production Raspberry may operate without Internet access.
+
+Deployment shall therefore work using local transport.
+
+Preferred mechanisms include:
+
+* SSH/SCP over the local wired LAN;
+* removable storage where required.
+
+The same release artifact should be installable without contacting:
+
+* GitHub;
+* PyPI;
+* cloud build infrastructure;
+* external package registries.
+
+
+=== Release Bundle
+
+A production release should eventually be distributable as an offline-capable bundle.
+
+Conceptually:
+
+[source,text]
+----
+aquaponics-controller-0.4.1/
+    aquaponics_controller-0.4.1.whl
+    dependencies/
+    install.sh
+    systemd/
+    checksums/
+    release-metadata/
+----
+
+Exact implementation may evolve.
+
+The important requirement is that production installation must not unexpectedly require Internet access.
+
+
+=== Target Architecture Compatibility
+
+The development workstation may use x86-64 while the Raspberry uses ARM.
+
+Pure Python packages are generally portable across these platforms when compatible Python versions are available.
+
+Dependencies containing compiled native components may require target-specific artifacts.
+
+The release process shall explicitly account for:
+
+* CPU architecture;
+* Python ABI;
+* operating-system compatibility;
+* native system libraries.
+
+
+=== Production Filesystem Separation
+
+Application code, configuration, and mutable data shall be separated.
+
+A recommended conceptual layout is:
+
+[source,text]
+----
+/opt/aquaponics/
+    releases/
+        0.4.0/
+        0.4.1/
+    current -> releases/0.4.1
+
+/etc/aquaponics/
+    configuration
+    secrets
+
+/var/lib/aquaponics/
+    database
+    persistent-state
+    backups
+----
+
+Exact paths may be changed by a documented deployment decision.
+
+The invariant is:
+
+[IMPORTANT]
+====
+Application code != configuration != persistent data.
+====
+
+
+=== Upgrade
+
+Upgrade should conceptually provide:
+
+[source,text]
+----
+known-good release
+      |
+      v
+install new release
+      |
+      v
+validate
+      |
+      +--> success -> activate
+      |
+      +--> failure -> rollback
+----
+
+The previous known-good application release should remain available until the new release is proven sufficiently functional.
+
+Database migrations require special care because software rollback may not automatically imply database rollback.
+
+
+=== Database Migration Discipline
+
+Database schema changes shall include:
+
+* explicit migration procedure;
+* source schema expectation;
+* target schema expectation;
+* failure behaviour;
+* backup requirements;
+* testing;
+* compatibility assessment;
+* rollback assessment.
+
+Application-code rollback shall never be assumed automatically safe after an irreversible database migration.
+
+Where migrations affect critical operational state, migration failure shall not lead to uncontrolled physical operation.
+
+
+=== Configuration Management
+
+Configuration shall be:
+
+* validated;
+* versioned where appropriate;
+* backed up;
+* recoverable;
+* written atomically.
+
+The only known-good configuration should not be overwritten blindly.
+
+A safe conceptual update is:
+
+[source,text]
+----
+write temporary configuration
+        |
+        v
+validate
+        |
+        v
+fsync if required
+        |
+        v
+atomic replacement
+----
+
+Configuration changes affecting physical control should be auditable where practical.
+
+
+=== Secrets
+
+Secrets shall not be committed to the public repository.
+
+Secrets may include:
+
+* private keys;
+* authentication tokens;
+* API credentials;
+* certificates;
+* passwords.
+
+Secrets should live in protected local configuration.
+
+Filesystem permissions shall prevent unnecessary access by other system users.
+
+
+=== Service User
+
+The complete Engine should not run as `root` merely for convenient hardware access.
+
+Prefer:
+
+* dedicated service user;
+* Linux groups;
+* device permissions;
+* explicit filesystem permissions.
+
+Privileges should be limited to those actually required.
+
+The API may use the same or a separate service identity depending on the final IPC and permission model.
+
+The API shall not receive hardware privileges merely because the Engine requires them.
+
+
+=== systemd Deployment
+
+The production runtime shall use separately supervised Engine and API services.
+
+Conceptually:
+
+[source,text]
+----
+aquaponics-engine.service
+aquaponics-api.service
+----
+
+The Engine is the primary autonomous service.
+
+The API is an external-interface service.
+
+Each service shall define as appropriate:
+
+* executable;
+* service user;
+* working environment;
+* startup dependencies;
+* restart policy;
+* shutdown timeout;
+* logging integration.
+
+The Engine service shall not require the API service to be running.
+
+Stopping, restarting, upgrading, or failing the API shall not stop autonomous physical control.
+
+The API shall detect Engine unavailability and recover communication when the Engine becomes available again.
+
+No desktop login session shall be required.
+
+
+=== Engine Service Supervision
+
+The Engine service shall support:
+
+* startup during unattended boot;
+* automatic restart after process failure;
+* controlled termination;
+* bounded restart policy;
+* journal integration;
+* health monitoring;
+* watchdog integration where implemented.
+
+Repeated failure shall not produce an uncontrolled infinite restart loop that masks a persistent unsafe condition.
+
+
+=== API Service Supervision
+
+The API service may restart independently of the Engine.
+
+API restart shall not:
+
+* reset physical state;
+* restart schedules;
+* duplicate accepted commands;
+* interrupt ordinary autonomous operation.
+
+If the Engine is unavailable, the API shall report that state accurately.
+
+The API shall not claim that a command was accepted when durable Engine acceptance did not occur.
+
+
+=== Local IPC Deployment
+
+The selected API-to-Engine IPC mechanism shall be documented during implementation.
+
+If a Unix domain socket is used, the production deployment should define:
+
+* path;
+* owner;
+* group;
+* permissions;
+* creation responsibility;
+* cleanup responsibility;
+* restart behaviour.
+
+A possible runtime location is:
+
+[source,text]
+----
+/run/aquaponics/
+----
+
+The final path remains an implementation decision.
+
+The IPC endpoint shall not be exposed more broadly than required.
+
+
+=== Health Monitoring
+
+Local health monitoring should eventually track:
+
+* Engine heartbeat;
+* Engine uptime;
+* Engine restart count;
+* Engine restart reason;
+* API state;
+* IPC state;
+* memory usage;
+* swap usage;
+* CPU temperature;
+* undervoltage/throttling;
+* disk usage;
+* inode usage;
+* DB health;
+* sensor health;
+* control-loop latency;
+* command backlog;
+* watchdog state.
+
+Trend information is preferable to isolated instantaneous values.
+
+
+=== Meaningful Engine Heartbeat
+
+A running Python process is not sufficient proof of a functioning Engine.
+
+The Engine heartbeat should demonstrate that meaningful control work is progressing.
+
+A heartbeat should only be refreshed after completion of an appropriate healthy control-cycle milestone.
+
+Conceptually:
+
+[source,text]
+----
+control cycle progresses
+        |
+        v
+critical work succeeds
+        |
+        v
+heartbeat refreshed
+----
+
+A deadlocked but still-existing process shall eventually be detectable as unhealthy.
+
+
+=== Runtime Diagnostics
+
+Production should preserve enough local diagnostics to distinguish:
+
+* Engine crash;
+* Engine hang;
+* API crash;
+* IPC failure;
+* OOM;
+* storage failure;
+* DB failure;
+* kernel problem;
+* watchdog reset;
+* clean reboot;
+* unexpected reboot;
+* power loss;
+* repeated restart;
+* command backlog.
+
+Important diagnostic information should survive reboot where practical.
+
+
+=== Logging Operations
+
+Production logs shall be:
+
+* bounded;
+* rotated;
+* locally available;
+* sufficiently detailed for diagnosis;
+* separated from durable domain history where appropriate.
+
+Logging failure shall not normally terminate core physical control unless it indicates a wider storage failure requiring safe degradation.
+
+Sensitive information shall not be written unnecessarily to logs.
+
+
+=== Production Database
+
+The authoritative operational database shall be local to the production controller.
+
+An embedded database such as SQLite is an appropriate initial implementation.
+
+A remote DB server shall not be required for physical control.
+
+This prevents failure of:
+
+* LAN cable;
+* Ethernet switch;
+* another computer;
+* remote database service;
+* Internet connection;
+
+from stopping the aquaponics controller.
+
+
+=== Database Access Ownership
+
+Normal operational database access belongs to the Engine.
+
+The API shall not require direct database-write access.
+
+Normal API and CLI queries shall use supported Engine query semantics rather than coupling themselves to private SQLite schema.
+
+This preserves:
+
+* schema independence;
+* Engine authority;
+* validation;
+* migration freedom;
+* access control.
+
+
+=== Command Journal Operations
+
+The Engine may use the production database as its durable command journal.
+
+Operational procedures shall therefore consider command state during:
+
+* startup;
+* shutdown;
+* backup;
+* migration;
+* restore;
+* failure recovery.
+
+Backup and restore procedures shall preserve enough information to reconcile accepted but incomplete work safely.
+
+
+=== Backup Operations
+
+Backups shall not interfere with core control.
+
+Loss of the backup destination shall not stop the Engine.
+
+Backup procedures shall define:
+
+* frequency;
+* retention;
+* consistency method;
+* destination;
+* restore procedure.
+
+A backup process is not considered proven until restoration has been tested.
+
+SQLite backups shall use a transactionally safe mechanism.
+
+A live copy of a database file during active writes shall not automatically be assumed consistent.
+
+
+=== Local and Independent Backups
+
+A copy stored on the same physical storage device is useful for some recovery scenarios but is not sufficient disaster protection.
+
+The eventual backup model should conceptually support:
+
+[source,text]
+----
+Live database
+     |
+     +--> rotating local backup
+     |
+     +--> independent off-device backup
+----
+
+Loss of off-device backup connectivity shall not affect physical operation.
+
+
+=== Boot Test
+
+A release intended for production must eventually pass an unattended boot test.
+
+After reboot:
+
+* Linux boots;
+* no human login is required;
+* Engine starts;
+* configuration loads;
+* local DB opens;
+* command journal is inspected;
+* incomplete operations are reconciled;
+* hardware interfaces initialize;
+* devices are reconciled;
+* safe output state is established;
+* control resumes;
+* network absence does not prevent local operation.
+
+The API may start afterward without becoming a prerequisite for Engine operation.
+
+
+=== Engine Startup Without API
+
+Production testing shall explicitly verify:
+
+[source,text]
+----
+machine boots
+      |
+      v
+Engine starts
+      |
+      v
+API unavailable
+      |
+      v
+autonomous control continues
+----
+
+The Engine shall not wait indefinitely for API startup.
+
+
+=== API Independence Test
+
+Production validation shall include deliberate API isolation.
+
+Verify:
+
+[source,text]
+----
+Engine running
+      |
+      v
+stop API
+      |
+      v
+Engine continues autonomous control
+      |
+      v
+restart API
+      |
+      v
+API reconnects to Engine
+----
+
+Also verify:
+
+[source,text]
+----
+API running
+      |
+      v
+Engine becomes unavailable
+      |
+      v
+API reports Engine unavailable
+      |
+      v
+Engine restarts
+      |
+      v
+API recovers communication
+----
+
+The API shall never report a state-changing operation as durably accepted if the Engine did not persist that command.
+
+
+=== IPC Failure Test
+
+Testing shall cover interruption of API-to-Engine communication.
+
+Examples include:
+
+* socket unavailable;
+* socket permission failure;
+* connection interrupted;
+* malformed payload;
+* client disconnect during request;
+* Engine unavailable;
+* API unavailable.
+
+IPC failure shall not stop autonomous Engine control.
+
+
+=== Command Recovery Test
+
+In a safe development or test environment, verify:
+
+[source,text]
+----
+submit state-changing request
+        |
+        v
+Engine durably accepts command
+        |
+        v
+interrupt Engine before completion
+        |
+        v
+restart Engine
+        |
+        v
+reconcile command
+        |
+        v
+produce deterministic outcome
+----
+
+The test shall verify that accepted commands are not silently lost.
+
+Where duplicate execution would be unsafe, idempotency shall also be verified.
+
+
+=== Power-Failure Test
+
+Before declaring the final production appliance robust, controlled tests should include:
+
+* abrupt power loss;
+* short interruption;
+* restart after outage;
+* interrupted database activity;
+* interrupted command execution;
+* controlled UPS shutdown where implemented;
+* recovery with network absent.
+
+Such tests must be performed in a way that does not endanger the real biological system.
+
+
+=== Storage-Failure Testing
+
+Where practical, development testing should cover:
+
+* filesystem full;
+* inode exhaustion;
+* read-only filesystem;
+* database-open failure;
+* failed backup destination;
+* corrupted test database;
+* unavailable persistent path.
+
+The Engine shall not convert storage failure into uncontrolled actuator behaviour.
+
+
+=== Watchdog Testing
+
+Watchdog behaviour shall be tested deliberately before production reliance.
+
+Testing should distinguish:
+
+* Engine process crash;
+* Engine hang;
+* operating-system hang;
+* normal restart;
+* watchdog-triggered restart.
+
+A watchdog shall not be used merely to hide an unexplained recurring failure.
+
+
+=== Release Validation
+
+After deployment, validate at least:
+
+* reported software version;
+* source/build identity;
+* Engine service status;
+* API service status;
+* Engine heartbeat;
+* IPC communication;
+* DB access;
+* command-journal accessibility;
+* required sensors;
+* relay access;
+* API;
+* local frontend where present;
+* logging;
+* storage free space;
+* inode availability;
+* current alarms;
+* current override state.
+
+Validation shall confirm not merely that processes exist, but that the controller is meaningfully operational.
+
+
+=== Operational Change Discipline
+
+Changes to production configuration shall be treated as controlled changes.
+
+Where practical:
+
+* record who changed it;
+* record when;
+* retain prior known-good configuration;
+* validate before activation;
+* record the deployed release;
+* record migration state.
+
+A configuration change shall not silently bypass command, authorization, or safety semantics.
+
+
+=== Maintenance Mode
+
+Maintenance mode shall be explicit.
+
+Its purpose is to permit operations that are unsafe or ambiguous during normal autonomous control.
+
+Examples include:
+
+* direct relay tests;
+* raw GPIO diagnostics;
+* sensor hardware troubleshooting;
+* wiring verification;
+* actuator service.
+
+Maintenance mode shall define:
+
+* how it is entered;
+* what Engine behaviour changes;
+* which operations become permitted;
+* how hardware exclusivity is guaranteed;
+* how it is exited;
+* how normal state is reconciled afterward.
+
+Maintenance mode is not an alternative everyday controller.
+
+
+=== Direct Hardware Diagnostic Procedure
+
+A low-level diagnostic procedure may conceptually require:
+
+[source,text]
+----
+normal operation
+      |
+      v
+enter maintenance / stop Engine
+      |
+      v
+obtain exclusive hardware ownership
+      |
+      v
+perform diagnostic
+      |
+      v
+release hardware
+      |
+      v
+restart / resume Engine
+      |
+      v
+reconcile physical state
+----
+
+Exact procedure shall be defined together with the implemented maintenance mechanism.
+
+
+=== Production Observability
+
+An operator should be able to answer:
+
+* Is the Engine running?
+* Is the control loop progressing?
+* Is the API running?
+* Is IPC healthy?
+* Are required sensors healthy?
+* What are current actuator states?
+* What commands are pending?
+* Did a command fail?
+* Is storage healthy?
+* Is the DB healthy?
+* Has the machine restarted?
+* Why did it restart?
+* Is an override active?
+* Is maintenance mode active?
+* Which release is installed?
+
+
+=== Failure Investigation
+
+Recurring failure shall be investigated rather than normalized.
+
+If the controller requires periodic manual restart, diagnostics should examine trends in:
+
+* memory;
+* swap;
+* file descriptors;
+* threads;
+* subprocesses;
+* sockets;
+* DB connections;
+* temporary files;
+* filesystem usage;
+* inode usage;
+* log growth;
+* control-loop latency;
+* command backlog;
+* CPU temperature;
+* power/undervoltage indicators.
+
+An automatic restart mechanism is a protection layer.
+
+It is not proof that the underlying defect has been solved.
+
+
+=== Offline Operation Verification
+
+A production candidate shall eventually be tested with Internet access absent.
+
+The controller should continue to provide:
+
+* Engine startup;
+* sensor acquisition;
+* scheduling;
+* autonomous control;
+* actuator execution;
+* local persistence;
+* command recovery;
+* local diagnostics.
+
+Remote features may become unavailable.
+
+Physical operation shall continue according to local policy.
+
+
+=== Development and Production Separation
+
+Development convenience shall not leak into production assumptions.
+
+Production shall not depend on:
+
+* IDE;
+* Git working tree;
+* developer shell session;
+* development-only environment variables;
+* Internet package installation;
+* fake hardware;
+* workstation-specific paths.
+
+Production behaviour shall be reproducible from documented release artifacts and configuration.
+
+
+=== Documentation Synchronization
+
+Development work shall update documentation when it changes:
+
+* architecture;
+* repository structure;
+* configuration;
+* command semantics;
+* API behaviour;
+* persistence;
+* hardware support;
+* deployment;
+* recovery procedure;
+* operator workflow.
+
+Code and documentation shall not intentionally describe different systems.
+
+
+=== AI-Assisted Development
+
+AI coding agents may be used extensively.
+
+Before substantial implementation work, an AI agent should receive the relevant project documentation.
+
+AI agents shall not treat implementation convenience as authorization to redesign architectural boundaries.
+
+In particular, AI-generated work shall preserve:
+
+* Engine authority;
+* unified command path;
+* persistence ownership;
+* hardware abstraction;
+* API/Engine separation;
+* offline autonomy;
+* safety mechanisms;
+* test requirements.
+
+AI-generated code is subject to the same review and testing requirements as human-generated code.
+
+
+=== Operational Principle
+
+[IMPORTANT]
+====
+The production Raspberry Pi is an autonomous appliance.
+
+It shall run a tested release, control the physical aquaponics installation without Internet or API dependence, recover safely from ordinary software failure, and expose management interfaces without surrendering control authority to them.
+====

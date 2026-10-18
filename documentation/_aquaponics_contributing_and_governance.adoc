@@ -1,0 +1,20 @@
+// ============================================================================
+// _aquaponics_contributing_and_governance.adoc
+// ============================================================================
+= Aquaponics - Contributing and Governance
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectnumlevels: 2
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:hide-uri-scheme: true
+:description: Defines contribution, review, governance, architecture, testing, security, documentation, and release rules for human developers, maintainers, external contributors, and AI coding agents working on the Aquaponics project.
+:toc-title: Table of contents
+:figure-caption:
+
+include::ap_contributing_and_governance.adoc[]

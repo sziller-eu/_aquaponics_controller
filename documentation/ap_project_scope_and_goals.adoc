@@ -1,0 +1,333 @@
+// ============================================================================
+// ap_project_scope_and_goals.adoc
+// ============================================================================
+
+== Project Scope and Goals
+
+=== Purpose
+
+The Aquaponics project develops and documents a physically and logically scalable aquaponic system for producing:
+
+* fish;
+* vegetables;
+* herbs;
+* other suitable plants.
+
+The project covers both:
+
+* the physical aquaponics installation;
+* the software and technical infrastructure required to control, observe, maintain, and extend it.
+
+The system is intended to be a real, continuously operating physical installation.
+
+=== Ownership and Control
+
+The physical installation and the software controlling it shall remain under the operator's control.
+
+The software shall be open source.
+
+The project shall minimize dependencies that could prevent future:
+
+* operation;
+* maintenance;
+* repair;
+* modification;
+* deployment;
+* extension;
+* migration to replacement hardware.
+
+[IMPORTANT]
+====
+"Free" in the context of this project does not primarily mean "free of charge".
+
+The project aims for technological and operational independence.
+====
+
+Preference shall therefore be given to:
+
+* decentralization;
+* open-source software;
+* open protocols;
+* documented interfaces;
+* locally operable systems;
+* standard Linux infrastructure;
+* replaceable hardware;
+* reproducible deployments;
+* data formats that remain accessible without a vendor service.
+
+Dependencies that create avoidable external control over the system should be avoided.
+
+Examples include mandatory:
+
+* proprietary cloud services;
+* online licensing;
+* external authentication services;
+* vendor accounts;
+* subscriptions;
+* closed remote-control platforms;
+* inaccessible proprietary data formats.
+
+A proprietary component may still be used when technically justified, provided that it does not become an unnecessary
+single point of dependency for the complete installation.
+
+=== Fundamental Operating Goal
+
+The Aquaponics system shall be able to keep the physical installation operational without continuous human supervision.
+
+The lowest-level controller shall be capable of operating:
+
+* continuously;
+* unattended;
+* locally;
+* without Internet access;
+* without a user interface;
+* without an AI agent;
+* without an external application;
+* without SHMC availability;
+* without cloud services.
+
+External systems may observe or influence the controller, but they shall not be required for normal physical operation.
+
+=== Physical Scalability
+
+The physical system shall be modular and extendable.
+
+Its major physical domains include the following.
+
+==== Priority 1 - Biological and Water System
+
+* fish tanks or pools;
+* fish;
+* grow beds and equivalent plant containers;
+* vegetables;
+* herbs;
+* other plants;
+* local water circulation;
+* pumps;
+* immediate piping;
+* overflow and return paths;
+* biological filtration functions.
+
+==== Priority 2 - Immediate Technical Infrastructure
+
+* electrical wiring required by the aquaponics installation;
+* sensors;
+* actuators;
+* relays;
+* local control electronics;
+* local water-management devices.
+
+==== Priority 3 - Housing and Environmental Infrastructure
+
+The installation may operate inside a greenhouse or similar enclosure.
+
+Possible systems include:
+
+* lighting;
+* ventilation;
+* heating;
+* cooling;
+* water refill;
+* windows;
+* shading;
+* large-scale piping;
+* large-scale electrical distribution.
+
+==== Priority 4 - Independent Energy Infrastructure
+
+Later installations may include:
+
+* photovoltaic generation;
+* battery storage;
+* backup power;
+* energy monitoring;
+* energy-management systems.
+
+The priority numbering expresses approximate physical and operational importance rather than a mandatory development sequence.
+
+=== Logical Scalability
+
+The software architecture shall allow the system to grow without requiring a redesign of the complete controller.
+
+Future extensions may include:
+
+* additional tanks;
+* additional grow beds;
+* additional pumps;
+* additional lighting zones;
+* additional temperature sensors;
+* pH sensing;
+* redox sensing;
+* water-level sensing;
+* flow sensing;
+* automated feeding;
+* automatic refill;
+* ventilation;
+* heating;
+* shading;
+* energy monitoring;
+* cameras;
+* vision analysis;
+* remote applications;
+* AI-assisted management.
+
+Adding a new device or subsystem should normally require:
+
+* a defined interface;
+* an implementation;
+* configuration;
+* domain integration where required;
+
+rather than changes throughout unrelated parts of the codebase.
+
+=== Production Controller
+
+The primary software component is the Aquaponics Engine.
+
+The Engine is the autonomous manager of the physical aquaponics installation.
+
+[IMPORTANT]
+====
+The API is not the manager.
+
+The browser frontend is not the manager.
+
+The mobile application is not the manager.
+
+SHMC is not the manager.
+
+An AI agent is not the manager.
+
+The Aquaponics Engine is the manager.
+====
+
+The production Engine shall:
+
+* observe the physical installation;
+* maintain its logical state;
+* execute schedules;
+* make normal low-level control decisions;
+* accept and execute authorized state-changing requests through its authoritative command mechanism;
+* operate physical devices;
+* persist relevant state;
+* record history;
+* detect degraded or failed components;
+* recover automatically where appropriate.
+
+=== External Management
+
+Higher-level systems may interact with the Engine.
+
+Possible external management actors and clients include:
+
+* a human operator;
+* the local web frontend;
+* the mobile application;
+* SHMC;
+* an AI agent;
+* future automation systems.
+
+These systems interact through defined interfaces.
+
+They may:
+
+* observe;
+* inspect history;
+* request actions;
+* configure supported parameters;
+* activate authorized overrides.
+
+They shall not bypass the Engine and manipulate physical hardware directly.
+
+State-changing requests remain subject to Engine authority and shall enter the Engine through its supported command path.
+
+=== Production and Experimental Separation
+
+The production Aquaponics installation shall not be responsible for running:
+
+* Digital Twin experiments;
+* evolutionary optimization;
+* physical simulation;
+* experimental historical replay;
+* arbitrary research workloads.
+
+The production runtime exists to control the real physical installation.
+
+However, the Engine shall have sufficiently clean architectural boundaries that the same Engine implementation may later be instantiated elsewhere with alternative:
+
+* input sources;
+* output adapters;
+* clocks;
+* persistence implementations;
+* configuration;
+* runtime environments.
+
+This requirement exists to preserve reusability.
+
+It does not make simulation part of the production Aquaponics deployment.
+
+[IMPORTANT]
+====
+Production-only runtime, reusable Engine architecture.
+====
+
+=== Connectivity Philosophy
+
+Permanent infrastructure should prefer physical wired connections.
+
+The intended production philosophy is:
+
+* wired Ethernet for network infrastructure;
+* physical buses for local hardware;
+* no Wi-Fi dependency;
+* no Bluetooth dependency.
+
+Loss of network connectivity shall not stop the local controller from performing its essential physical responsibilities.
+
+=== Project Boundaries
+
+The project includes:
+
+* the Aquaponics Engine;
+* hardware-access layers;
+* persistence;
+* API;
+* administrative CLI;
+* local browser frontend;
+* deployment tooling;
+* production runtime infrastructure;
+* documentation;
+* mobile remote-control application in a separate software unit.
+
+The project does not require all optional subsystems to exist before the core controller is considered usable.
+
+The minimum useful system is an autonomous physical controller capable of safely operating the essential aquaponics installation.
+
+=== Design Priority
+
+When design goals conflict, the approximate priority order is:
+
+. safety of people;
+. survival and welfare of the biological system;
+. understandable and deterministic control behavior;
+. reliability;
+. recoverability;
+. autonomy;
+. observability;
+. maintainability;
+. architectural simplicity;
+. modularity;
+. extensibility;
+. performance;
+. visual appearance;
+. convenience.
+
+[IMPORTANT]
+====
+The Aquaponics project is first a physical life-support controller.
+
+Convenience features must not reduce the reliability of the core physical system.
+====
+
+
+

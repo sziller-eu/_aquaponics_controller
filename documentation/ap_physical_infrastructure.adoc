@@ -1,0 +1,560 @@
+// ============================================================================
+// 05_physical_infrastructure.adoc
+// ============================================================================
+
+== Physical Infrastructure
+
+=== Purpose
+
+This document describes the real physical system controlled by the Aquaponics software.
+
+It is intended to become the authoritative physical-system reference.
+
+Unlike the architecture documents, this document may change as the actual installation changes.
+
+=== Physical System Overview
+
+The aquaponics installation contains:
+
+* fish;
+* water;
+* plant-growing areas;
+* circulation;
+* aeration;
+* lighting;
+* electrical control;
+* sensors;
+* supporting infrastructure.
+
+The software exists to control and observe this physical installation.
+
+=== Biological System
+
+==== Fish Tanks / Pools
+
+The system contains one or more water bodies used to keep fish.
+
+For each production installation, document:
+
+* identifier;
+* dimensions;
+* approximate volume;
+* fish species;
+* approximate stocking;
+* connection to water circuit;
+* overflow behaviour;
+* aeration;
+* sensors.
+
+==== Grow Beds
+
+Grow beds provide:
+
+* plant-growing space;
+* water treatment;
+* biological filtration.
+
+For each bed, document:
+
+* identifier;
+* dimensions;
+* media;
+* plant type;
+* water inlet;
+* water outlet;
+* flood/drain or circulation behaviour.
+
+=== Water Circuit
+
+The water circuit is a first-class physical subsystem.
+
+Document:
+
+* pump;
+* pipe routes;
+* diameters;
+* valves;
+* split points;
+* return paths;
+* overflow paths;
+* refill points;
+* drains;
+* failure behaviour.
+
+A diagram should eventually identify every major water path.
+
+Failure analysis of the water circuit should include where applicable:
+
+* pump stopped;
+* loss of electrical power;
+* blocked inlet;
+* blocked return;
+* disconnected pipe;
+* leaking connection;
+* unintended siphoning;
+* overflow;
+* dry-running pump;
+* loss of prime.
+
+The physical system should avoid turning a single ordinary failure into uncontrolled drainage of the fish tank or flooding of electrical equipment.
+
+=== Existing Water Pump
+
+The existing physical system uses a mains-powered water pump controlled through a relay.
+
+Document for the final installation:
+
+* manufacturer/model;
+* rated voltage;
+* rated power;
+* flow;
+* head;
+* normal duty cycle;
+* relay assignment;
+* expected safe failure state.
+
+=== Aeration
+
+The system uses a mains-powered air pump controlled through a relay.
+
+Aeration is biologically important and should be treated as a high-priority actuator.
+
+Document:
+
+* air-pump model;
+* power;
+* distribution;
+* air stones/diffusers;
+* expected continuous/cyclic behaviour;
+* relay assignment;
+* failure response.
+
+=== Lighting
+
+The current system includes two independently controlled physical lights.
+
+Each light shall have its own logical actuator identity.
+
+Document:
+
+* light identifier;
+* type;
+* rated power;
+* controlled area;
+* relay assignment;
+* normal schedule.
+
+=== Relay System
+
+The controller operates an 8-channel relay system.
+
+The relay electronics are currently powered from the Raspberry Pi power domain.
+
+This arrangement has operated successfully and is considered acceptable unless measured power requirements indicate otherwise.
+
+The relay board controls physical mains-voltage devices.
+
+[WARNING]
+====
+GPIO-level control and mains-voltage switching are different electrical domains.
+
+All mains-voltage wiring must use appropriate electrical safety practices.
+====
+
+For each relay document:
+
+[cols="1,2,2,2,2"]
+|=================================================================================
+|Channel    |Logical Device |Physical Device    |Relay Contact / De-energized State      |Required Safe State
+|1          |TBD            |TBD                |TBD                        |TBD
+|2          |TBD            |TBD                |TBD                        |TBD
+|3          |TBD            |TBD                |TBD                        |TBD
+|4          |TBD            |TBD                |TBD                        |TBD
+|5          |TBD            |TBD                |TBD                        |TBD
+|6          |TBD            |TBD                |TBD                        |TBD
+|7          |TBD            |TBD                |TBD                        |TBD
+|8          |TBD            |TBD                |TBD                        |TBD
+|=================================================================================
+
+For every production relay, document:
+
+* whether the relay input is active-high or active-low;
+* whether the load uses normally-open or normally-closed contacts;
+* the physical load state while the relay coil is de-energized;
+* GPIO behaviour before Linux configures the pin;
+* behaviour during controller power loss;
+* behaviour during Engine restart.
+
+A software value such as `OFF` is not sufficient documentation of physical fail-safe behaviour.
+
+=== Future Window Control
+
+Automated natural-air ventilation through window actuation is planned but is not currently part of the core production hardware.
+
+When implemented, document:
+
+* actuator type;
+* end-stop detection;
+* opening range;
+* safe state;
+* manual override;
+* obstruction handling.
+
+=== Future Shading
+
+Automated shading is planned but is not currently part of the core production hardware.
+
+Document future implementation requirements separately before activation.
+
+=== Temperature Sensing
+
+The Sense HAT onboard temperature measurement is not considered suitable for environmental measurement because Raspberry processor heat distorts the reading.
+
+The new design shall use dedicated external sensors.
+
+A DS18B20-type external temperature sensor has already been considered and physically identified for use.
+
+Production documentation shall identify:
+
+* sensor ID;
+* physical location;
+* connection;
+* calibration;
+* acceptable range;
+* failure handling.
+
+=== Sense HAT
+
+The Sense HAT was used by the earlier controller for:
+
+* display;
+* clock/status visualization;
+* onboard measurements.
+
+The new controller does not require the Sense HAT.
+
+Its removal simplifies:
+
+* GPIO access;
+* physical construction;
+* sensor attachment;
+* system size;
+* dependency structure.
+
+The Sense HAT shall therefore not be considered a required component of the new production architecture.
+
+=== pH and Redox
+
+pH and redox measurement are desirable future sensor capabilities.
+
+Available hardware has included a Pico Technology DrDAQ with pH/redox connectivity.
+
+This equipment is not yet part of the production baseline.
+
+Before production integration, document:
+
+* exact device;
+* Linux support;
+* electrode condition;
+* calibration;
+* sampling;
+* failure semantics;
+* hardware adapter.
+
+=== Water Level
+
+Water-level sensing should be considered for future production use.
+
+Possible functions include:
+
+* low-water alarm;
+* refill control;
+* pump protection;
+* overflow detection.
+
+No specific sensor technology is fixed by this document.
+
+=== Flow
+
+Flow sensing may later provide stronger confirmation that commanded pumping produces real circulation.
+
+This would allow the system to distinguish:
+
+[source,text]
+----
+pump command = ON
+----
+
+from:
+
+[source,text]
+----
+water flow confirmed
+----
+
+No flow sensor is currently required.
+
+=== Camera
+
+Camera functionality is optional.
+
+During development, a Raspberry Pi native camera may be used because it is simple to integrate.
+
+The permanent camera architecture may instead use:
+
+* wired IP camera;
+* PoE camera;
+* dedicated camera node.
+
+The permanent camera location should be determined by:
+
+* view;
+* fish visibility;
+* reflections;
+* lighting;
+* maintenance;
+* environmental protection.
+
+The Raspberry controller location should not be dictated solely by camera cable length.
+
+=== Camera Networking
+
+A wired IP camera does not need to connect directly to the Raspberry.
+
+Both devices may connect to the same Ethernet switch.
+
+Conceptually:
+
+[source,text]
+----
+              Ethernet Switch
+                /        \
+               /          \
+       Raspberry          Camera
+----
+
+No wireless connection is required.
+
+=== PoE
+
+Power over Ethernet may be used for suitable remote network devices.
+
+PoE can carry:
+
+* Ethernet data;
+* electrical power;
+
+over one network cable.
+
+PoE may be especially useful for cameras positioned far from the controller.
+
+=== Wired Communication
+
+The physical production installation shall prefer wired connectivity.
+
+Default rule:
+
+* no Wi-Fi dependency;
+* no Bluetooth dependency.
+
+Suitable technologies include:
+
+* Ethernet;
+* 1-Wire;
+* GPIO;
+* I2C;
+* SPI;
+* USB;
+* serial communication.
+
+=== Controller Power Domain
+
+Low-power controller-attached devices may be powered from the Raspberry where appropriate.
+
+Examples:
+
+* relay electronics;
+* DS18B20;
+* similar low-power sensors.
+
+The actual power budget shall be measured on the final controller.
+
+=== SSD Power
+
+An external SSD may draw substantially more current than simple sensors.
+
+The SSD may therefore use an independent power source while retaining USB data connectivity to the Raspberry.
+
+The final SSD/controller combination shall be tested as one hardware set.
+
+=== Power Supply
+
+The controller requires a stable power source.
+
+The production hardware design shall consider:
+
+* normal load;
+* peak load;
+* boot load;
+* all relay channels active;
+* storage activity;
+* attached peripherals;
+* undervoltage;
+* cable voltage drop.
+
+Power margin shall be based on realistic peak conditions rather than only idle consumption.
+
+=== UPS
+
+A UPS or equivalent battery-backed solution should eventually protect the controller.
+
+Its purposes may include:
+
+* surviving short outages;
+* detecting prolonged outage;
+* allowing controlled shutdown;
+* preventing repeated rapid power cycling.
+
+The UPS is part of controller durability, not a replacement for safe physical design.
+
+=== Controller Enclosure and Location
+
+The production controller shall be installed in a location suitable for long-term unattended operation.
+
+Document:
+
+* controller mounting position;
+* enclosure;
+* ventilation;
+* ambient-temperature range;
+* humidity exposure;
+* condensation risk;
+* splash/water exposure;
+* cable entry;
+* strain relief;
+* service access;
+* separation from mains wiring;
+* separation from plumbing where practical.
+
+The Raspberry Pi, storage, relay-control electronics, and associated connectors shall not remain unnecessarily exposed to the humid aquaponics environment.
+
+Cooling and enclosure design shall avoid creating a condensation problem while solving a temperature problem.
+
+=== Physical Fail-Safe Behaviour
+
+For every actuator the installation shall answer:
+
+[IMPORTANT]
+====
+What happens physically if the controller disappears completely?
+====
+
+Possible physical defaults include:
+
+* OFF;
+* ON;
+* valve open;
+* valve closed;
+* mechanically unchanged.
+
+There is no universal rule that "everything OFF" is safest.
+
+The correct state depends on the physical subsystem.
+
+=== Boot-State Behaviour
+
+GPIO and relays may pass through temporary states during:
+
+* power-on;
+* Linux boot;
+* GPIO initialization;
+* Engine startup;
+* shutdown.
+
+Critical outputs shall therefore be tested through the complete boot and shutdown sequence.
+
+The production design shall document for each critical GPIO-controlled output:
+
+* GPIO pull-up/pull-down state;
+* relay-board input polarity;
+* relay state before GPIO initialization;
+* relay state if the GPIO becomes high-impedance;
+* physical device state if Raspberry power disappears.
+
+Where necessary, hardware pull resistors or equivalent electrical measures shall establish a deterministic state independently of application software.
+
+=== Mains Safety
+
+The system controls mains-voltage devices.
+
+Physical implementation shall address:
+
+* insulation;
+* enclosures;
+* grounding;
+* cable rating;
+* relay rating;
+* fusing;
+* moisture;
+* strain relief;
+* separation of low-voltage and mains wiring.
+
+Software cannot compensate for unsafe mains wiring.
+
+The installation shall also address:
+
+* residual-current protection (RCD/GFCI equivalent);
+* appropriate circuit protection;
+* splash and condensation protection;
+* suitable enclosure ingress protection;
+* drip loops and cable routing;
+* separation between wet plumbing paths and electrical equipment;
+* connector protection;
+* corrosion;
+* safe maintenance isolation;
+* compliance with applicable electrical regulations.
+
+Mains-voltage equipment shall be positioned and enclosed so that an ordinary plumbing leak does not directly expose energized conductors.
+
+=== Greenhouse
+
+The future or existing housing structure may include:
+
+* transparent enclosure;
+* windows;
+* shading;
+* lights;
+* ventilation;
+* heating;
+* refill plumbing;
+* electrical distribution.
+
+The greenhouse is a physical subsystem but is not required to be fully automated before the Aquaponics Engine is useful.
+
+=== Physical Documentation Requirements
+
+The final production installation should eventually include:
+
+* overall photograph;
+* electrical diagram;
+* water-flow diagram;
+* GPIO mapping;
+* relay mapping;
+* sensor-location diagram;
+* network diagram;
+* power diagram;
+* hardware inventory;
+* component model numbers.
+
+=== As-Built Documentation
+
+This document shall describe the actual installed system, not merely planned architecture.
+
+Future components should be explicitly marked as:
+
+* planned;
+* candidate;
+* experimental;
+
+until physically installed and commissioned.
+

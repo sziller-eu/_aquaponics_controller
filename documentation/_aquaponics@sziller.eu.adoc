@@ -1,0 +1,91 @@
+[[BEGIN]]
+= Aquaponics
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 1
+:sectnums:
+:sectnumlevels: 1
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:doctype: book
+:hide-uri-scheme: true
+:description: Comprehensive summary of the Aquaponic developments @sziller.eu
+:toc-title: Table of contents
+:figure-caption:
+
+[[TableOfContents]]
+*Szilard Gabor LADANYI* - 2026
+
+[[ap-chapter:01]]
+include::ap_project_scope_and_goals.adoc[]
+
+****
+jump to the beginning of the article: <<ap-chapter:01>> +
+back to the table of contents: <<BEGIN>>
+****
+
+---
+
+[[ap-chapter:02]]
+include::ap_architecture_and_design.adoc[]
+
+****
+jump to the beginning of the article: <<ap-chapter:02>> +
+back to the table of contents: <<BEGIN>>
+****
+
+---
+
+[[ap-chapter:03]]
+include::ap_development_and_operations.adoc[]
+
+****
+jump to the beginning of the article: <<ap-chapter:03>> +
+back to the table of contents: <<BEGIN>>
+****
+
+---
+
+[[ap-chapter:04]]
+include::ap_contributing_and_governance.adoc[]
+
+****
+jump to the beginning of the article: <<ap-chapter:04>> +
+back to the table of contents: <<BEGIN>>
+****
+
+---
+
+[[ap-chapter:05]]
+include::ap_physical_infrastructure.adoc[]
+
+****
+jump to the beginning of the article: <<ap-chapter:05>> +
+back to the table of contents: <<BEGIN>>
+****
+
+---
+
+[[ap-chapter:06]]
+include::ap_it_system_reproduction.adoc[]
+
+****
+jump to the beginning of the article: <<ap-chapter:06>> +
+back to the table of contents: <<BEGIN>>
+****
+
+---
+
+[[ap-chapter:07]]
+include::ap_ai_code_and_logic_guidelines.adoc[]
+
+****
+jump to the beginning of the article: <<ap-chapter:07>> +
+back to the table of contents: <<BEGIN>>
+****
+
+---
+

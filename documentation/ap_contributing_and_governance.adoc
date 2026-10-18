@@ -1,0 +1,494 @@
+// ============================================================================
+// ap_contributing_and_governance.adoc
+// ============================================================================
+
+== Contributing and Governance
+
+=== Purpose
+
+The Aquaponics project is open source.
+
+Contributions are welcome when they preserve the project's architectural, safety, and operational principles.
+
+This document governs contributions by:
+
+* maintainers;
+* external developers;
+* occasional contributors;
+* AI-assisted developers;
+* autonomous or semi-autonomous AI coding agents.
+
+=== Maintainer Authority
+
+Project maintainers are responsible for:
+
+* architectural direction;
+* safety-related decisions;
+* release acceptance;
+* repository administration;
+* dependency policy;
+* contribution acceptance.
+
+Open-source availability does not imply that every proposed change must be accepted.
+
+=== Architecture Before Convenience
+
+Contributions shall respect the documented architecture.
+
+A locally convenient shortcut shall not bypass:
+
+* Engine authority;
+* API boundaries;
+* hardware abstraction;
+* persistence rules;
+* authorization;
+* runtime safety;
+* offline autonomy.
+
+=== Issue-First Principle
+
+Substantial changes should normally start from a GitHub issue.
+
+The issue should establish:
+
+* motivation;
+* scope;
+* constraints;
+* acceptance criteria;
+* affected components.
+
+This is especially important for AI-assisted work.
+
+An AI agent should not interpret an implementation request as permission to redesign adjacent architecture.
+
+=== Understand Before Replacing
+
+Existing code may contain unusual decisions for valid historical, physical, or safety reasons.
+
+Contributors shall investigate before replacing behaviour merely because another implementation appears cleaner.
+
+If the reason for an existing design is unclear:
+
+* inspect history;
+* inspect documentation;
+* inspect related issues;
+* ask for clarification where required.
+
+=== Safety-Critical Changes
+
+Changes affecting the following require additional care:
+
+* pumps;
+* aeration;
+* mains-voltage relays;
+* water refill;
+* heating;
+* physical safety;
+* startup behaviour;
+* shutdown behaviour;
+* persistence;
+* watchdog;
+* recovery;
+* scheduling;
+* authentication.
+
+Such changes should include explicit failure-path analysis.
+
+=== Hardware Changes
+
+A hardware-related contribution shall document:
+
+* supported device;
+* electrical assumptions;
+* communication interface;
+* failure behaviour;
+* initialization behaviour;
+* shutdown behaviour;
+* configuration;
+* required permissions.
+
+Hardware-specific code shall remain behind an adapter boundary.
+
+=== Testing Requirement
+
+New behaviour shall be tested at the appropriate level.
+
+Tests may include:
+
+* unit tests;
+* integration tests;
+* failure tests;
+* hardware tests;
+* restart tests;
+* migration tests.
+
+A successful nominal-path test is not sufficient for changes affecting safety or recovery.
+
+=== Regression Protection
+
+A bug fix should normally add a regression test where technically practical.
+
+The test should reproduce the previous failure and verify the corrected behaviour.
+
+=== Production and Test Separation
+
+Contributors shall not introduce a production code path where test or fake hardware can be enabled casually.
+
+Fake components exist to support development and testing.
+
+Production hardware composition shall remain explicit.
+
+=== API Discipline
+
+External functionality shall use supported system interfaces.
+
+Remote clients shall use supported API semantics.
+Local administrative tooling shall use the supported Engine administrative interface.
+
+The following are prohibited as architectural shortcuts:
+
+* direct frontend DB manipulation;
+* direct mobile DB manipulation;
+* direct AI GPIO access;
+* bypassing Engine validation;
+* undocumented privileged endpoints.
+
+=== Unified Command-Path Discipline
+
+Every contribution that introduces a state-changing action shall use the authoritative Engine command path.
+
+This requirement applies to changes originating from:
+
+* API;
+* CLI;
+* schedules;
+* autonomous policy;
+* SHMC;
+* AI integration;
+* future management interfaces.
+
+A contribution shall not create a direct hardware shortcut merely because the new origin is trusted.
+
+The following pattern is prohibited:
+
+[source,text]
+----
+trusted caller
+    |
+    v
+direct actuator access
+----
+
+Trust affects authorization.
+
+It does not change the execution architecture.
+
+A state-changing operation shall not be considered accepted merely because:
+
+* an API request was received;
+* an IPC message was delivered;
+* an in-memory queue accepted an item.
+
+Normal state-changing commands shall become durable Engine-owned commands before they are considered accepted.
+Contributors shall not introduce an alternative transient command path for convenience.
+
+=== Command Ordering and Idempotency
+
+Contributions affecting command creation or execution shall preserve deterministic command semantics.
+
+They shall not rely accidentally on:
+
+* database row order;
+* thread scheduling;
+* socket timing;
+* process scheduling;
+* Python container ordering.
+
+Commands that may be retried across communication or process failure shall have deliberate idempotency behaviour.
+
+A retry shall not cause duplicate physical execution merely because:
+
+* an API client retried;
+* IPC was interrupted;
+* the Engine restarted;
+* a scheduled occurrence was evaluated again.
+
+Changes to command priority, ordering, deduplication, or retry semantics require explicit tests.
+
+=== Engine Database Ownership
+
+Contributors shall treat the operational database as private Engine infrastructure.
+
+External components shall not:
+
+* insert commands directly;
+* mutate operational state directly;
+* use direct database access as their normal query interface;
+* depend on private table layout as their supported interface.
+
+The Engine may internally use the database as:
+
+* durable command journal;
+* state persistence;
+* history storage;
+* recovery source.
+
+This internal use does not make the database a public integration interface.
+
+=== Query and Command Separation
+
+Contributors shall distinguish between:
+
+* querying existing state;
+* requesting new activity.
+
+A query shall not be unnecessarily converted into a physical operation.
+
+A physical operation shall not be disguised as a read-only query.
+
+This distinction must remain visible in:
+
+* API design;
+* authorization;
+* audit history;
+* tests.
+
+=== Engine and API Independence
+
+The autonomous Engine and the API are separate production concerns.
+
+Contributions shall preserve the following dependency direction:
+
+[source,text]
+----
+External Clients
+      |
+      v
+     API
+      |
+      v
+    Engine
+      |
+      v
+Physical System
+----
+
+The Engine shall not require the API process to be available for:
+
+* startup;
+* scheduling;
+* sensing;
+* autonomous control;
+* actuator execution;
+* local persistence;
+* recovery.
+
+API failure, restart, upgrade, or temporary absence shall not stop autonomous physical operation.
+
+=== IPC Independence
+
+Contributors shall not couple domain semantics to a specific local IPC technology.
+
+Changing from one suitable transport to another shall not require redesigning:
+
+* command lifecycle;
+* scheduling;
+* control policies;
+* actuator execution;
+* persistence.
+
+=== Engine-Loop Protection
+
+External communication shall not be allowed to block or starve autonomous Engine operation.
+
+Contributions involving IPC, API ingress, command ingestion, or administrative communication shall preserve bounded processing.
+
+External activity shall not indefinitely prevent:
+
+* sensor acquisition;
+* state reconciliation;
+* schedule processing;
+* autonomous control;
+* command execution;
+* health-heartbeat updates.
+
+A stalled or overloaded external client shall not become a life-support dependency.
+
+=== No Competing Hardware Owners
+
+Only the designated production Engine may normally own physical actuator control.
+
+A new service, CLI command, API process, frontend, or AI integration shall not independently acquire normal runtime control of the same hardware.
+
+Direct low-level diagnostics require explicit maintenance semantics.
+
+=== Database Discipline
+
+Schema changes require:
+
+* explicit migration strategy;
+* compatibility consideration;
+* backup consideration;
+* rollback consideration;
+* tests.
+
+Do not assume that replacing application code automatically makes a database rollback safe.
+
+=== Time Discipline
+
+Do not add uncontrolled direct clock access throughout domain logic.
+
+Use the project's defined time abstraction and timing conventions.
+
+Durations and absolute timestamps shall remain conceptually separate.
+
+=== Dependency Policy
+
+New dependencies shall be justified.
+
+Prefer dependencies that are:
+
+* open source;
+* actively maintained;
+* available without proprietary services;
+* compatible with offline deployment;
+* compatible with Raspberry architecture;
+* reasonably lightweight.
+
+Avoid dependencies that create unnecessary:
+
+* cloud reliance;
+* vendor lock-in;
+* runtime Internet requirements;
+* licensing uncertainty.
+
+=== Security
+
+Do not commit:
+
+* passwords;
+* API keys;
+* private keys;
+* tokens;
+* private certificates;
+* production secrets.
+
+Security-sensitive changes should minimize privilege and preserve separation between remote access and local physical control.
+
+=== Documentation
+
+A change shall update documentation when it changes:
+
+* architecture;
+* setup;
+* configuration;
+* deployment;
+* API;
+* physical hardware;
+* recovery behaviour;
+* operator procedure.
+
+Code and documentation should not intentionally diverge.
+
+=== AI-Assisted Development
+
+AI tools may be used extensively.
+
+AI-generated changes are held to the same standards as human-generated changes.
+
+The human maintainer remains responsible for accepting:
+
+* architecture;
+* behaviour;
+* safety implications;
+* dependencies;
+* release quality.
+
+AI agents should be given the relevant project documentation before performing substantial work.
+
+=== AI Context Priority
+
+When an AI agent receives conflicting information, the preferred hierarchy is:
+
+. explicit current task instructions;
+. current architecture documentation;
+. current accepted GitHub issues/decisions;
+. current implementation;
+. historical discussion.
+
+An AI agent shall not infer permission to change an architectural invariant merely because older code violates the desired architecture.
+
+=== Pull Request Quality
+
+A pull request should communicate:
+
+* what changed;
+* why;
+* how it was tested;
+* what may fail;
+* deployment impact;
+* documentation impact.
+
+Large unrelated refactors should not be mixed into feature work without justification.
+
+=== Commit Quality
+
+Commits should be comprehensible and reasonably scoped.
+
+Commit history should help future developers understand:
+
+* intent;
+* progression;
+* reason for changes.
+
+=== Review
+
+Review should consider:
+
+* correctness;
+* safety;
+* architectural conformity;
+* tests;
+* failure modes;
+* security;
+* maintainability;
+* offline operation;
+* deployment impact.
+
+=== Licensing
+
+The repository shall contain an explicit open-source license.
+
+Contributors shall not add code, media, or dependencies that are incompatible with the project's license.
+
+Third-party licenses shall be respected and documented where required.
+
+=== Release Authority
+
+Only maintainers authorized for release management may publish official production releases.
+
+A merged commit is not automatically a production release.
+
+=== Breaking Changes
+
+Breaking changes to supported API behaviour, configuration, persistence, or hardware semantics shall be deliberate.
+
+They should include:
+
+* migration path;
+* versioning consideration;
+* release notes;
+* affected-client analysis.
+
+=== External Clients
+
+The web frontend, mobile application, SHMC, and AI agents are clients of supported interfaces.
+
+Contributors shall not couple the Engine to one specific client implementation.
+
+=== Guiding Principle
+
+[IMPORTANT]
+====
+Contributions should make the Aquaponics system safer, clearer, more maintainable, or more capable without weakening autonomous physical operation.
+====

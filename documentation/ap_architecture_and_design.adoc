@@ -1,0 +1,1639 @@
+// ============================================================================
+// ap_architecture_and_design.adoc
+// ============================================================================
+
+== Architecture and Fundamental Design
+
+=== Architectural Objective
+
+The Aquaponics architecture shall provide a robust autonomous controller for a real physical installation.
+
+The target structure is conceptually:
+
+[source,text]
+----
+                  OPTIONAL EXTERNAL SYSTEMS
+
+      Browser      Mobile      Human      AI      SHMC
+          \           |          |        |        /
+           \          |          |        |       /
+            +---------+----------+--------+------+
+                              |
+                             API
+                              |
+                              v
+                    AQUAPONICS ENGINE
+                              |
+                  authoritative decisions
+                              |
+                    hardware abstraction
+                              |
+              +---------------+---------------+
+              |               |               |
+           sensors         actuators       optional
+                                           media
+              |               |
+              +------- physical system -------+
+----
+
+=== Engine Authority
+
+The Engine shall be the authoritative software controller of the physical installation.
+
+Its operation shall not be request-driven.
+
+API calls may influence an already-running system, but the absence of API calls shall not stop:
+
+* schedules;
+* pump control;
+* aeration;
+* sensor acquisition;
+* alarms;
+* local persistence;
+* recovery logic;
+* normal autonomous operation.
+
+=== Autonomous Control Loop
+
+The normal decision flow shall conceptually follow:
+
+[source,text]
+----
+Sensors
+   |
+   v
+Observations
+   |
+   v
+Validated System State
+   |
+   v
+Control Policies
+   |
+   v
+Decision
+   |
+   v
+Desired Actuator State
+   |
+   v
+Hardware Adapter
+   |
+   v
+Physical System
+----
+
+=== Central Decision Authority
+
+Normal coordinated decisions shall be made by one authoritative control layer.
+
+This prevents multiple independent controllers from unintentionally producing:
+
+* oscillation;
+* hunting;
+* unstable feedback;
+* conflicting actuator commands;
+* contradictory state.
+
+Individual hardware devices shall not independently determine high-level aquaponics behaviour unless they implement an explicitly designated safety function.
+
+=== Unified Command Execution Architecture
+
+All state-changing actions shall pass through one authoritative Engine-owned command path.
+
+This applies regardless of where the requested action originated.
+
+Possible command origins include:
+
+* autonomous Engine control policies;
+* schedules;
+* API requests;
+* local administrative CLI requests;
+* SHMC;
+* authorized AI agents;
+* authorized human operators.
+
+No origin shall receive a privileged shortcut directly to physical hardware.
+
+Conceptually:
+
+[source,text]
+----
+                  EXTERNAL ORIGIN
+        API / CLI / SHMC / AI / Human
+                         |
+                         | submit intent
+                         v
+                  ENGINE INGRESS
+                         |
+                         | validate / accept
+                         v
+                DURABLE COMMAND JOURNAL
+                         |
+                         |
+                         +<----- scheduled actions
+                         |
+                         +<----- autonomous actions
+                         |
+                         v
+                  COMMAND EXECUTOR
+                         |
+                         v
+                  control validation
+                         |
+                         v
+                 hardware adapters
+                         |
+                         v
+                  physical system
+----
+
+[IMPORTANT]
+====
+The Engine shall have one authoritative state-changing execution path.
+
+An external API command, a scheduled operation, and an autonomous control decision shall ultimately pass through the same command execution mechanism before affecting physical hardware.
+====
+
+=== Engine Ingress
+
+The Engine shall expose an explicit ingress boundary for state-changing external intentions.
+
+External components shall submit an intent to the Engine.
+
+Examples include:
+
+[source,text]
+----
+turn light 1 ON
+activate aeration for 30 minutes
+apply temporary pump override
+change an authorized operating parameter
+----
+
+The ingress boundary is responsible for accepting an external intention into the Engine's authority.
+
+Transport reception alone does not mean that a command has been accepted.
+
+A state-changing request shall only be considered accepted when the Engine has:
+
+* received it;
+* validated its basic structure;
+* determined that it may enter the Engine command system;
+* persisted the resulting command durably.
+
+If the Engine cannot durably accept the command, the caller shall not receive a false success acknowledgement.
+
+=== Transport Is Not Command Semantics
+
+The mechanism used to carry an external request into the Engine is an implementation detail.
+
+Possible local transports may include:
+
+* Unix domain socket;
+* localhost TCP;
+* another explicitly selected local IPC mechanism.
+
+The transport shall not define the Engine's control semantics.
+
+Conceptually:
+
+[source,text]
+----
+API
+ |
+ | local IPC
+ v
+Engine ingress
+ |
+ | Engine semantics begin here
+ v
+Durable command journal
+----
+
+Changing IPC technology shall not require changing:
+
+* control policies;
+* command semantics;
+* actuator semantics;
+* persistence semantics;
+* scheduling semantics.
+
+=== Engine Ownership of Persistence
+
+The Engine shall be the sole authoritative owner of its operational persistence.
+
+External components shall not directly insert, update, or delete operational records in order to control the system.
+
+In particular:
+
+[source,text]
+----
+NOT ALLOWED
+
+API
+ |
+ v
+commands table
+ |
+ v
+Engine
+----
+
+The intended architecture is:
+
+[source,text]
+----
+API
+ |
+ | submit intent
+ v
+Engine ingress
+ |
+ | Engine persists accepted command
+ v
+command journal
+ |
+ v
+Engine command execution
+----
+
+This preserves Engine sovereignty over:
+
+* command validation;
+* persistence;
+* ordering;
+* execution;
+* recovery;
+* auditability.
+
+=== Durable Command Journal
+
+Accepted state-changing commands shall be recorded durably before normal physical execution.
+
+The durable command journal exists so that accepted work can survive:
+
+* Engine restart;
+* process crash;
+* operating-system restart;
+* temporary interruption of execution.
+
+A command record should contain enough information to identify at least conceptually:
+
+* command identity;
+* origin;
+* command type;
+* parameters;
+* creation/acceptance time;
+* intended execution time where relevant;
+* current execution state;
+* execution/result relationship.
+
+Exact database schema belongs to implementation documentation.
+
+Command history shall remain auditable.
+
+Implementation may use append-only execution records or another mechanism that preserves equivalent historical traceability.
+
+=== Command Lifecycle
+
+A command shall have an explicit lifecycle.
+
+A minimal conceptual lifecycle is:
+
+[source,text]
+----
+QUEUED
+   |
+   v
+EXECUTING
+   |
+   +--------> FAILED
+   |
+   v
+DONE
+----
+
+More detailed state-machine semantics may be introduced where required.
+
+The Engine shall be able to determine after restart whether a command is:
+
+* waiting;
+* being recovered;
+* complete;
+* failed;
+* ambiguous and requiring reconciliation.
+
+A state-changing command must not disappear merely because the Engine process restarted after accepting it.
+
+=== Command Idempotency
+
+Commands that may be observed or retried across process or network failure shall have deliberate idempotency semantics.
+
+The Engine shall avoid executing one logical operation multiple times merely because:
+
+* the API retried;
+* a connection was interrupted;
+* the Engine restarted;
+* a loop iteration was delayed.
+
+Where needed, commands shall use an explicit command identifier, occurrence identifier, or idempotency key.
+
+=== Command Ordering and Execution Fairness
+
+When multiple commands are eligible for execution, their ordering shall be deterministic.
+
+The Engine shall not depend on accidental properties such as:
+
+* database row order;
+* thread scheduling;
+* socket arrival timing;
+* Python object ordering.
+
+The command model shall support an explicit ordering mechanism using appropriate information such as:
+
+* priority;
+* intended execution time;
+* acceptance sequence;
+* command identity.
+
+The exact priority policy shall be defined with the corresponding control semantics.
+
+Command processing shall also be bounded so that a large command backlog cannot indefinitely starve:
+
+* sensor acquisition;
+* state reconciliation;
+* safety evaluation;
+* scheduling;
+* health monitoring.
+
+Explicit safety mechanisms may receive higher priority than ordinary commands.
+
+Manual overrides and other control modes shall be incorporated into control-state evaluation so that autonomous policies do not continuously generate commands contradicting an active authorized override.
+
+=== Engine Outer Loop
+
+The production Engine shall run continuously.
+
+Its outer loop shall repeatedly provide opportunities for:
+
+* sensor acquisition;
+* state reconciliation;
+* external-intent ingestion;
+* schedule processing;
+* autonomous-policy evaluation;
+* command execution;
+* persistence;
+* health reporting.
+
+Conceptually:
+
+[source,python]
+----
+while running:
+
+    acquire_observations()
+
+    reconcile_state()
+
+    accept_available_external_intents()
+
+    materialize_due_scheduled_commands()
+
+    evaluate_autonomous_control()
+
+    execute_due_commands()
+
+    persist_required_state()
+
+    update_health_heartbeat()
+
+    wait_for_next_cycle()
+----
+
+This is conceptual pseudocode.
+
+The exact ordering and decomposition may change where technically justified.
+
+The invariant is that external communication is processed as part of the continuously operating Engine rather than replacing or driving the Engine loop.
+
+Most cycles may contain no external instruction.
+
+In that case, external-intent handling is effectively a non-action step and autonomous operation continues normally.
+
+=== Bounded External Ingress
+
+Processing external communication shall never block the autonomous control loop indefinitely.
+
+The Engine ingress mechanism shall therefore be non-blocking or explicitly time-bounded. An unavailable, stalled, malformed, or overloaded external client shall not prevent:
+
+* sensor acquisition;
+* schedule processing;
+* autonomous decisions;
+* command execution;
+* health-heartbeat updates.
+
+Each Engine cycle may process a bounded number of newly arrived external intents or spend a bounded amount of time on ingress processing.
+
+Additional requests may remain queued for later processing.
+
+[IMPORTANT]
+====
+External communication is serviced by the Engine. +
+External communication shall never become the clock that drives the Engine.
+====
+
+=== Autonomous Actions Use the Command Path
+
+Autonomous policy evaluation shall not create a second actuator-control path.
+
+For example, avoid:
+
+[source,text]
+----
+temperature policy
+      |
+      v
+pump.turn_on()
+----
+
+when externally requested operations use a command system.
+
+Instead:
+
+[source,text]
+----
+temperature policy
+      |
+      v
+autonomous action intent
+      |
+      v
+durable command
+      |
+      v
+normal command executor
+      |
+      v
+pump
+----
+
+This ensures that autonomous actions receive the same:
+
+* validation;
+* persistence;
+* execution semantics;
+* history;
+* recovery behaviour;
+
+as other state-changing actions.
+
+=== Scheduled Actions Use the Command Path
+
+Schedules shall materialize due operations into ordinary Engine commands.
+
+A scheduler shall not bypass the command mechanism and operate physical hardware directly.
+
+Conceptually:
+
+[source,text]
+----
+Schedule
+   |
+   | occurrence becomes due
+   v
+Command materialized
+   |
+   v
+Durable command journal
+   |
+   v
+Normal command execution
+----
+
+A scheduled occurrence should be identifiable by its intended absolute occurrence time or equivalent stable occurrence identity.
+
+This shall prevent duplicate execution caused by:
+
+* delayed loop iterations;
+* restart;
+* midnight/date transitions;
+* repeated schedule evaluation.
+
+=== Query Path
+
+Read-only queries are distinct from state-changing commands.
+
+Examples include:
+
+* current temperature;
+* current logical pump state;
+* active alarms;
+* Engine health;
+* historical measurements;
+* command status.
+
+These operations normally do not need to become commands.
+
+They shall use an Engine-owned query/read interface.
+
+Conceptually:
+
+[source,text]
+----
+API / CLI / SHMC
+        |
+        | query
+        v
+Engine Query Interface
+        |
+        v
+Current State / History
+----
+
+External clients shall still not directly use the operational database as their normal query interface.
+
+This keeps persistence layout private to the Engine and allows the Engine to expose stable domain semantics.
+
+=== Active Read Operations
+
+A request for already-known state is a query.
+
+A request that causes new physical activity is an action.
+
+For example:
+
+[source,text]
+----
+"Return the latest known water temperature"
+    -> query
+----
+
+while:
+
+[source,text]
+----
+"Read the physical temperature sensor immediately"
+    -> active operation
+    -> command path
+----
+
+The distinction shall be based on whether the operation causes new physical or state-changing work.
+
+=== API Process Separation
+
+The API shall run as a process separate from the autonomous Engine.
+
+Conceptually:
+
+[source,text]
+----
+Web / Mobile / SHMC / AI / other clients
+                  |
+                  v
+       aquaponics-api.service
+                  |
+                  | local IPC
+                  v
+      aquaponics-engine.service
+                  |
+                  v
+        physical control system
+----
+
+Failure, restart, upgrade, or temporary unavailability of the API process shall not terminate the Engine's physical control loop.
+
+The Engine shall not depend on the API process for:
+
+* scheduling;
+* sensor acquisition;
+* autonomous control;
+* actuator execution;
+* local persistence;
+* recovery.
+
+=== API Command Semantics
+
+For state-changing requests, the API acts as an authenticated and authorized transport adapter.
+
+It shall:
+
+* authenticate the caller;
+* authorize the requested capability;
+* validate request syntax;
+* submit the resulting intent to the Engine;
+* return the Engine's acceptance or rejection result.
+
+The API shall not:
+
+* execute the actuator itself;
+* persist commands directly into the Engine database;
+* bypass the Engine command journal.
+
+A successfully accepted state-changing request should return a command identifier or equivalent execution reference.
+
+Clients may then query the resulting command state.
+
+Whether an API call optionally waits for completion is a presentation concern.
+
+Waiting shall never bypass the durable command path.
+
+=== CLI Command Semantics
+
+Normal administrative CLI commands shall communicate with the running Engine through the supported Engine interface.
+
+Examples include:
+
+* status;
+* health;
+* alarms;
+* inspect state;
+* request override;
+* release override.
+
+The normal CLI shall not manipulate GPIO directly while the Engine is operating.
+
+Direct low-level hardware diagnostics require an explicit maintenance condition.
+
+Possible maintenance rules include:
+
+* Engine stopped;
+* exclusive maintenance mode;
+* explicit hardware-control lock.
+
+Two independent processes shall not concurrently control the same physical actuator.
+
+=== Local Safety Exceptions
+
+A narrow local safety mechanism may override normal central decision-making when:
+
+* the consequence of failure is severe;
+* the required reaction window is short;
+* waiting for the ordinary Engine decision path would be unsafe.
+
+Such behaviour must be:
+
+* deliberately designed;
+* narrowly scoped;
+* documented;
+* testable;
+* observable where technically possible.
+
+=== Time-Scale-Tolerant Design
+
+Aquaponics is normally a comparatively slow physical process.
+
+Important system evolution generally occurs over:
+
+* seconds;
+* minutes;
+* hours;
+* days;
+* weeks.
+
+The software shall exploit these physical time scales.
+
+Correctness should not unnecessarily depend on:
+
+* millisecond timing;
+* tightly coupled concurrent tasks;
+* aggressive polling;
+* fragile scheduling assumptions;
+* race-prone coordination.
+
+This does not require slow software.
+
+It requires software whose correctness does not depend on unnecessarily precise execution timing.
+
+=== Time Handling
+
+Time handling shall be explicit.
+
+The system shall distinguish:
+
+* absolute real-world time;
+* elapsed duration;
+* scheduling time;
+* persisted timestamps.
+
+Durations should use monotonic time where appropriate.
+
+Examples include:
+
+* pump runtime;
+* retry delay;
+* control-loop duration;
+* timeout;
+* heartbeat age.
+
+Absolute events should use explicit timezone-aware timestamps.
+
+Internal persisted timestamps should preferably use a normalized representation such as UTC.
+
+Local time belongs primarily to:
+
+* human-facing display;
+* local schedule interpretation;
+* reporting.
+
+Wall-clock access should not be scattered unpredictably throughout domain logic.
+
+=== Hardware Abstraction
+
+Core domain logic shall not directly contain platform-specific operations such as:
+
+[source,text]
+----
+GPIO.output(...)
+----
+
+Instead, it should express domain operations such as:
+
+[source,text]
+----
+pump.turn_on()
+----
+
+Hardware-specific implementations shall exist behind defined interfaces.
+
+Examples include:
+
+* temperature sensor;
+* relay;
+* pump;
+* aerator;
+* light;
+* water-level sensor;
+* pH sensor;
+* camera source.
+
+The Raspberry Pi 40-pin connector itself is not an architectural interface.
+
+=== Environment Boundary
+
+The Engine shall interact with the physical world through defined boundaries.
+
+The production composition shall connect those boundaries to real hardware.
+
+The core Engine shall not be intentionally contaminated with production branches such as:
+
+[source,text]
+----
+if simulation:
+    ...
+else:
+    ...
+----
+
+The production runtime uses real hardware implementations.
+
+Alternative implementations may exist in development or in separate future projects.
+
+=== Production Composition
+
+Only the explicitly designated production composition shall be capable of creating physical hardware adapters.
+
+Conceptually:
+
+[source,text]
+----
+Production composition
+    |
+    +-- DS18B20 adapter
+    +-- GPIO relay adapter
+    +-- production clock
+    +-- local persistence
+    +-- production configuration
+----
+
+Development and test environments shall not accidentally acquire physical GPIO control merely by changing a Boolean configuration value.
+
+=== State Model
+
+The Engine shall maintain explicit logical state.
+
+The state model may include:
+
+* latest valid sensor observations;
+* desired actuator state;
+* known actuator command state;
+* operating mode;
+* schedules;
+* alarms;
+* overrides;
+* hardware health;
+* configuration references;
+* control-policy state;
+* incomplete operations.
+
+The system shall distinguish between:
+
+* desired state;
+* persisted state;
+* observed state;
+* historical state;
+* physical reality.
+
+A persisted value does not prove current physical reality following a restart or power failure.
+
+=== State History
+
+Relevant history shall be persisted so that an authorized operator can determine:
+
+* what was observed;
+* what the Engine believed;
+* what decision was made;
+* what action was requested;
+* whether a fault occurred;
+* whether an override was active.
+
+Where practical, important decisions should be explainable from recorded state and policy inputs.
+
+=== Sensor Semantics
+
+Sensor failure shall be represented explicitly.
+
+The following must not be treated as equivalent:
+
+[source,text]
+----
+temperature = 0
+----
+
+and:
+
+[source,text]
+----
+temperature = unavailable
+----
+
+Sensor adapters should detect where technically possible:
+
+* missing device;
+* timeout;
+* protocol error;
+* invalid checksum;
+* impossible value;
+* implausible jump;
+* stale observation;
+* invalid format.
+
+Control policies shall define behaviour when required measurements are unavailable.
+
+=== Actuator Semantics
+
+Actuator control shall represent domain intent rather than raw GPIO state.
+
+Where physical confirmation is unavailable, the software shall distinguish between:
+
+* command requested;
+* command sent;
+* command assumed;
+* physically confirmed.
+
+Critical multi-step operations should use recoverable state transitions where appropriate.
+
+Possible states include:
+
+[source,text]
+----
+REQUESTED
+COMMAND_SENT
+CONFIRMED
+COMPLETED
+FAILED
+----
+
+The actuator-operation lifecycle is distinct from the higher-level command lifecycle.
+
+For example:
+
+[source,text]
+----
+Command:
+    QUEUED
+      |
+      v
+    EXECUTING
+      |
+      +---------------------------+
+                                  |
+                                  v
+Actuator operation:          REQUESTED
+                                  |
+                                  v
+                             COMMAND_SENT
+                                  |
+                                  v
+                              CONFIRMED
+                                  |
+                                  v
+                              COMPLETED
+                                  |
+                                  v
+Command:                       DONE
+----
+
+Not every actuator supports physical confirmation.
+
+Therefore the exact actuator lifecycle depends on device capabilities, while the Engine command lifecycle remains an Engine-level concern.
+
+=== Logging
+
+Logging shall describe software and operational events.
+
+Each subsystem is responsible for emitting meaningful events.
+
+Examples include:
+
+* subsystem started;
+* device detected;
+* device unavailable;
+* measurement rejected;
+* actuator command issued;
+* control decision made;
+* override activated;
+* recovery attempted;
+* watchdog event;
+* shutdown requested.
+
+Logs shall be aggregated centrally.
+
+Logs must be bounded and rotated.
+
+No subsystem may consume unlimited storage through logging.
+
+=== Telemetry
+
+Telemetry and logging are different concerns.
+
+Examples of telemetry include:
+
+* temperature;
+* pH;
+* redox;
+* water level;
+* flow;
+* CPU temperature;
+* memory usage.
+
+High-frequency observations need not always be persisted at their original frequency.
+
+Telemetry may be:
+
+* retained in memory;
+* aggregated;
+* downsampled;
+* selectively persisted.
+
+=== Persistence
+
+The production Engine shall use local authoritative persistence.
+
+An embedded database such as SQLite is an appropriate initial implementation.
+
+Core operation shall not require a remote database server.
+
+The production database may contain:
+
+* configuration;
+* measurements;
+* control history;
+* logical runtime state;
+* calibration;
+* alarms;
+* schedules;
+* durable commands;
+* command execution history.
+
+The operational database is private Engine infrastructure.
+
+External software shall not manipulate control state, submit commands, or trigger physical actions by directly editing database rows.
+
+External state-changing requests shall enter through the Engine ingress boundary.
+
+Conceptually:
+
+[source,text]
+----
+External Client
+      |
+      v
+API / CLI / SHMC
+      |
+      | submit intent
+      v
+Engine Ingress
+      |
+      | validate and accept
+      v
+Engine-owned Durable Command Journal
+      |
+      v
+Engine Command Executor
+      |
+      v
+Physical Action
+----
+
+The Engine may use its own local database internally as a durable command journal.
+
+This internal use of persistence is part of the Engine implementation and does not make the database a public command interface.
+
+The distinction is:
+
+[source,text]
+----
+FORBIDDEN
+
+External Component
+        |
+        v
+Operational Database
+        |
+        v
+Physical Action
+----
+
+versus:
+
+[source,text]
+----
+INTENDED
+
+External Component
+        |
+        v
+Engine Ingress
+        |
+        v
+Engine-owned Persistence
+        |
+        v
+Command Execution
+        |
+        v
+Physical Action
+----
+
+The Engine shall remain the sole authoritative owner of:
+
+* command acceptance;
+* command persistence;
+* command ordering;
+* command execution;
+* command recovery;
+* operational state mutation.
+
+External systems may receive data through supported query interfaces, exports, replicas, backups, or telemetry channels, but shall not use direct database access as the normal integration mechanism.
+
+=== Local Database Requirement
+
+The physical controller shall continue operating if the LAN disappears.
+
+Therefore the authoritative operational state required for control shall reside locally on the controller.
+
+External systems may receive:
+
+* replicas;
+* exports;
+* backups;
+* telemetry copies.
+
+Those copies are not required for core operation.
+
+=== Database Integrity
+
+Persistent updates shall be transactional where appropriate.
+
+The Engine shall detect:
+
+* database-open failure;
+* incompatible schema;
+* invalid critical records;
+* interrupted migration;
+* corruption where detectable.
+
+The system must define when to:
+
+* reconstruct noncritical state;
+* enter degraded operation;
+* restore from backup;
+* refuse unsafe automatic operation.
+
+=== Backup
+
+A live database is not a backup.
+
+A copy stored on the same failed storage device is not sufficient disaster protection.
+
+The backup hierarchy should eventually include:
+
+[source,text]
+----
+Live Database
+     |
+     +--> rotating local snapshots
+     |
+     +--> independent off-device backup
+----
+
+SQLite backups shall use transactionally safe mechanisms.
+
+Backups should be:
+
+* timestamped;
+* rotated;
+* validated;
+* periodically restored in a test environment.
+
+=== Runtime Reliability Layers
+
+The controller shall be designed around the assumption that individual components eventually fail.
+
+The protection hierarchy is:
+
+[source,text]
+----
+Physical safety
+      |
+      v
+Hardware-defined safe behaviour
+      |
+      v
+Operating-system recovery
+      |
+      v
+Engine/process recovery
+      |
+      v
+Application-state recovery
+      |
+      v
+Monitoring and notification
+----
+
+=== Process Supervision
+
+The production Engine shall run as a proper Linux service.
+
+`systemd` is the preferred production supervisor.
+
+The service shall support:
+
+* boot-time startup;
+* restart following process failure;
+* controlled termination;
+* journal integration;
+* bounded restart policy.
+
+Manual shell execution shall not be the normal production operating method.
+
+=== Meaningful Health Heartbeat
+
+The existence of a Python process is not sufficient proof of health.
+
+The Engine shall eventually provide a meaningful health heartbeat.
+
+A heartbeat should demonstrate that useful control activity continues to execute.
+
+Conceptually:
+
+[source,text]
+----
+Control cycle succeeds
+        |
+        v
+Heartbeat refreshed
+        |
+        v
+Supervisor checks heartbeat age
+        |
+        v
+Heartbeat expires
+        |
+        v
+Engine considered unhealthy
+----
+
+=== Hardware Watchdog
+
+A process supervisor cannot recover a frozen operating system.
+
+A Linux/Raspberry hardware watchdog should therefore be available as a later protection layer.
+
+Conceptually:
+
+[source,text]
+----
+Aquaponics Engine
+       |
+       v
+systemd supervision
+       |
+       v
+Linux watchdog
+       |
+       v
+hardware watchdog
+       |
+       v
+automatic reboot
+----
+
+Watchdog configuration shall be tested deliberately.
+
+A watchdog must not be used to hide an unexplained recurring failure.
+
+=== Restart and Startup Reconciliation
+
+Startup is safety-critical.
+
+The Engine shall not assume that the previous execution ended cleanly.
+
+The startup sequence should conceptually be:
+
+[source,text]
+----
+Linux boots
+    |
+    v
+hardware interfaces initialize
+    |
+    v
+Engine starts
+    |
+    v
+configuration validated
+    |
+    v
+persistent state validated
+    |
+    v
+devices rediscovered
+    |
+    v
+sensor sanity checks
+    |
+    v
+outputs established in known state
+    |
+    v
+incomplete operations reconciled
+    |
+    v
+normal control begins
+----
+
+=== Clean Shutdown
+
+On normal termination the Engine should have an opportunity to:
+
+* stop initiating new work;
+* place actuators into defined states where required;
+* finish or safely abort transactions;
+* flush critical state;
+* close database connections;
+* close hardware handles;
+* record a clean shutdown.
+
+Shutdown handling shall be bounded.
+
+A hung cleanup operation shall not prevent the machine from shutting down indefinitely.
+
+=== Recovery Escalation
+
+Automatic recovery must not create uncontrolled reboot loops.
+
+A possible escalation hierarchy is:
+
+[source,text]
+----
+Process failure
+    -> restart Engine
+
+Repeated process failure
+    -> degraded or safe mode
+
+Operating system unresponsive
+    -> watchdog reboot
+
+Repeated boot failure
+    -> avoid blind unsafe restart loop
+----
+
+Restart count and reset cause should be observable where possible.
+
+=== Power Reliability
+
+Power integrity is part of the controller architecture.
+
+The installation shall consider:
+
+* outage;
+* short interruption;
+* brownout;
+* undervoltage;
+* poor power supplies;
+* voltage drop;
+* switching noise;
+* rapid cycling.
+
+A UPS or suitable backup-power arrangement should eventually support:
+
+* continuation through short interruptions;
+* controlled shutdown during prolonged interruption.
+
+When power returns, unattended boot and Engine recovery shall be possible.
+
+=== Storage
+
+The production controller should avoid ordinary SD-card storage as a critical single point of failure where practical.
+
+The preferred target is:
+
+* boot from SSD or similarly durable storage;
+* OS on SSD;
+* Engine on SSD;
+* local DB on SSD;
+* persistent logs/state on SSD;
+* no SD card required during ordinary production operation.
+
+Actual support depends on the selected Raspberry Pi hardware.
+
+The SSD may use an independent power source if required by the system power budget.
+
+=== Resource Protection
+
+Long-running resource use shall be observable.
+
+Monitor trends in:
+
+* memory;
+* swap;
+* file descriptors;
+* threads;
+* processes;
+* sockets;
+* DB connections;
+* temporary files;
+* filesystem space;
+* filesystem inodes;
+* log growth.
+
+A slow leak that takes weeks to cause failure is still a production bug.
+
+=== Disk Protection
+
+No component may grow storage usage without bounds.
+
+Production shall monitor both:
+
+[source,bash]
+----
+df -h
+----
+
+and:
+
+[source,bash]
+----
+df -ih
+----
+
+where appropriate.
+
+Retention limits shall exist for:
+
+* logs;
+* telemetry;
+* backups;
+* temporary data;
+* crash artifacts.
+
+=== Degraded Operation
+
+The Engine shall support explicit degraded states.
+
+Not every fault shall mean either:
+
+* full normal operation;
+* complete shutdown.
+
+Examples:
+
+[source,text]
+----
+Remote UI unavailable
+    -> continue physical control
+
+Noncritical sensor unavailable
+    -> continue with warning
+
+Historical export unavailable
+    -> continue local control
+
+Critical sensor unavailable
+    -> conservative/safe policy
+
+Control loop unavailable
+    -> defined recovery/failsafe
+----
+
+=== API Boundary
+
+The API is the canonical supported external interaction boundary.
+
+It shall expose authorized operations for:
+
+* current state;
+* history;
+* health;
+* devices;
+* alarms;
+* supported configuration;
+* interventions;
+* overrides;
+* diagnostics.
+
+The API shall not become the control loop.
+
+The Engine continues operating when no requests arrive.
+
+=== Web Frontend
+
+The web frontend shall consume the same supported API used by other clients.
+
+It shall not:
+
+* directly access the database;
+* import internal backend implementation details;
+* manipulate GPIO;
+* use a private bypass interface.
+
+The frontend shall be capable of operating locally without Internet access.
+
+Where hosted on the same machine as the backend, it shall be able to connect through the local interface, for example:
+
+[source,text]
+----
+127.0.0.1
+----
+
+The same web application may also be exposed over the local wired LAN subject to authorization.
+
+=== Mobile Application
+
+The mobile application is an external API client.
+
+It shall not be required for physical operation.
+
+It may provide functionality equivalent or similar to the web frontend.
+
+The mobile application shall use supported API semantics rather than application-specific shortcuts into the Engine.
+
+=== Administrative CLI
+
+A local administrative CLI shall exist for maintenance and diagnostics.
+
+It may expose privileged operations unsuitable for ordinary remote clients.
+
+Possible functions include:
+
+* health inspection;
+* raw sensor diagnostics;
+* hardware diagnostics;
+* DB validation;
+* maintenance mode;
+* controlled actuator test;
+* configuration inspection.
+
+The CLI should reuse domain/service logic rather than create a second controller implementation.
+
+=== Authentication and Authorization
+
+External interaction shall be authenticated and authorized.
+
+Capabilities should distinguish at least conceptually:
+
+* read-only monitoring;
+* operational intervention;
+* configuration;
+* maintenance;
+* administration.
+
+Local physical control shall not depend on continuously contacting a remote authentication server.
+
+=== SHMC Compatibility
+
+The Aquaponics controller shall be compatible with SHMC.
+
+SHMC integration may provide:
+
+* routing;
+* remote authentication;
+* authorization;
+* discovery;
+* remote management;
+* remote observation;
+* configurable persistence integration where appropriate.
+
+[IMPORTANT]
+====
+SHMC wraps the autonomous Aquaponics system.
+
+SHMC does not become part of the life-support control loop.
+====
+
+Conceptually:
+
+[source,text]
+----
+SHMC
+  |
+  v
+Aquaponics SHMC Adapter
+  |
+  v
+Aquaponics API
+  |
+  v
+Aquaponics Engine
+  |
+  +-- local database
+  |
+  +-- local physical hardware
+----
+
+Loss of SHMC may remove remote functionality.
+
+It shall not stop local physical control.
+
+=== Camera Boundary
+
+Camera functionality is optional.
+
+Failure of the camera subsystem shall not prevent:
+
+* Engine startup;
+* pump control;
+* aeration;
+* lighting;
+* ordinary sensor acquisition;
+* autonomous schedules.
+
+Camera access shall use modular adapters.
+
+Possible sources include:
+
+* Raspberry Pi CSI camera;
+* USB camera;
+* wired IP camera;
+* dedicated camera node.
+
+Camera capture and vision interpretation are separate concerns.
+
+Advanced vision analysis shall not initially form part of the critical life-support control path.
+
+=== Wired Network Policy
+
+Permanent production networking should use wired Ethernet.
+
+Network topology may include:
+
+* router;
+* Ethernet switch;
+* Raspberry controller;
+* IP camera;
+* management workstation;
+* future network devices.
+
+PoE may be used for remote camera or network-device power where appropriate.
+
+=== Low-Power Peripheral Power
+
+Low-power devices that only exist as part of the controller may be powered from the Raspberry Pi where electrically appropriate.
+
+Examples include:
+
+* relay-control electronics;
+* DS18B20;
+* other low-power sensors.
+
+Higher-power or separately located devices may use independent power.
+
+Actual power budgets shall be measured before production deployment.
+
+=== Open Architecture
+
+The system should avoid architectural choke points controlled by external vendors.
+
+The core controller should not require:
+
+* proprietary cloud APIs;
+* mandatory subscriptions;
+* closed authentication providers;
+* proprietary remote-control platforms;
+* inaccessible source code;
+* online license checks.
+

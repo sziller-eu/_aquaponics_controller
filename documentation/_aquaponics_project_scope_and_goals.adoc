@@ -1,0 +1,20 @@
+// ============================================================================
+// _aquaponics_project_scope_and_goals.adoc
+// ============================================================================
+= Aquaponics - Project Scope and Goals
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectnumlevels: 2
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:hide-uri-scheme: true
+:description: Defines the purpose, scope, ownership principles, autonomy requirements, scalability goals, project boundaries, and fundamental design priorities of the Aquaponics project.
+:toc-title: Table of contents
+:figure-caption:
+
+include::ap_project_scope_and_goals.adoc[]

@@ -1,0 +1,20 @@
+// ============================================================================
+// _aquaponics_it_system_reproduction.adoc
+// ============================================================================
+= Aquaponics - IT System Reproduction
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectnumlevels: 2
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:hide-uri-scheme: true
+:description: Defines the complete information required to reconstruct the production Aquaponics controller from replacement hardware, including operating system, storage, networking, Python environment, services, IPC, persistence, backups, watchdogs, hardware mappings, validation, and disaster recovery.
+:toc-title: Table of contents
+:figure-caption:
+
+include::ap_it_system_reproduction.adoc[]

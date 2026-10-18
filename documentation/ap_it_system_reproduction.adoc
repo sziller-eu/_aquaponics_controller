@@ -1,0 +1,1031 @@
+// ============================================================================
+// ap_it_system_reproduction.adoc
+// ============================================================================
+== IT System Reproduction
+
+=== Purpose
+
+This document defines how to recreate the production Aquaponics controller from replacement hardware.
+
+The target requirement is:
+
+[IMPORTANT]
+====
+Given suitable replacement hardware, local installation media, project release artifacts, configuration backup, and persistent-data backup, an administrator shall be able to reconstruct a functioning Aquaponics controller without
+undocumented knowledge.
+====
+
+=== Status of This Document
+
+This document initially acts as a reproduction framework.
+
+Exact hardware values shall be filled in once the new production controller hardware is selected and commissioned.
+
+Do not invent missing values.
+
+Use explicit `TBD` markers until the real value is known.
+
+=== Production Hardware Inventory
+
+Record the exact production components.
+
+==== Raspberry Pi
+
+[source,text]
+----
+Model:              TBD
+Board revision:     TBD
+RAM:                TBD
+Serial/identifier:  TBD
+Boot capability:    TBD
+----
+
+The selected model should support true boot from durable external storage without requiring an operational SD card where practical.
+
+==== Storage
+
+[source,text]
+----
+Type:               SSD / TBD
+Manufacturer:       TBD
+Model:              TBD
+Capacity:           TBD
+Interface:          TBD
+USB adapter:        TBD
+Power source:       TBD
+Filesystem:         TBD
+----
+
+==== Raspberry Power Supply
+
+[source,text]
+----
+Manufacturer:       TBD
+Model:              TBD
+Voltage:            TBD
+Current rating:     TBD
+Cable:              TBD
+----
+
+==== UPS
+
+[source,text]
+----
+Installed:          no / TBD
+Type:               TBD
+Model:              TBD
+Shutdown signaling: TBD
+Runtime target:     TBD
+----
+
+==== Relay Board
+
+[source,text]
+----
+Manufacturer:       TBD
+Model:              TBD
+Channels:           8
+Logic voltage:      TBD
+Coil supply:        Raspberry power domain / verify
+GPIO mapping:       see hardware mapping
+----
+
+==== Network
+
+[source,text]
+----
+Connection:         wired Ethernet
+Wi-Fi required:     no
+Bluetooth required: no
+Switch:             TBD
+IP strategy:        TBD
+Hostname:           TBD
+----
+
+=== Reproduction Inputs
+
+A complete recovery shall require only controlled assets.
+
+These should include:
+
+* controller hardware;
+* OS installation media;
+* versioned Aquaponics release bundle;
+* production configuration backup;
+* secrets backup where required;
+* DB backup;
+* hardware mapping;
+* this document.
+
+GitHub access should not be mandatory during emergency recovery.
+
+=== Operating System
+
+The production controller shall use Linux.
+
+Preferred family:
+
+* Raspberry Pi OS;
+* Debian;
+* another documented Debian-family system if deliberately selected.
+
+Record:
+
+[source,text]
+----
+Distribution:       TBD
+Version:            TBD
+Architecture:       TBD
+Kernel:             TBD
+Image checksum:     TBD
+----
+
+=== Storage Installation
+
+The target production controller should boot directly from SSD or equivalent durable storage.
+
+Document the exact procedure required by the selected Raspberry model.
+
+Possible steps may include:
+
+* bootloader configuration;
+* EEPROM update;
+* one-time USB-boot enablement;
+* OS image writing;
+* partition creation;
+* filesystem creation.
+
+The production procedure shall explicitly state whether an SD card is required at any stage.
+
+=== Partitioning
+
+Record the actual production partition layout.
+
+[source,text]
+----
+Device:             TBD
+
+Partition 1:        TBD
+Partition 2:        TBD
+Partition 3:        TBD
+----
+
+Do not rely on remembered defaults.
+
+=== Hostname
+
+Record the production hostname.
+
+[source,text]
+----
+Hostname: TBD
+----
+
+The hostname should remain stable across ordinary software upgrades.
+
+=== User Accounts
+
+Document all required local accounts.
+
+The Engine should run under a dedicated service account.
+
+Example structure:
+
+[source,text]
+----
+Administrative user:       TBD
+Engine service user:       aquaponics / TBD
+API service user:          same as Engine / separate / TBD
+----
+
+The Engine service user shall not have unrestricted privileges unless specifically required.
+
+If the API uses a separate service account, document its groups and permissions independently. The API account shall not receive hardware privileges merely because the Engine requires them.
+
+=== SSH
+
+Local wired SSH administration should be supported.
+
+Record:
+
+* permitted users;
+* key locations;
+* password-login policy;
+* root-login policy;
+* authorized keys;
+* firewall rules.
+
+Private keys shall not be stored in the public repository.
+
+=== Network Configuration
+
+Core operation shall not require networking.
+
+However, local administration and API access may use wired Ethernet.
+
+Record:
+
+[source,text]
+----
+Interface:          TBD
+Addressing:         static / DHCP reservation / TBD
+IPv4 address:       TBD
+Gateway:            TBD
+DNS dependency:     not required for local control
+----
+
+A network outage shall not prevent Engine startup.
+
+=== System Time
+
+The controller must define how correct wall-clock time is maintained while offline.
+
+Document:
+
+* RTC installed or not;
+* NTP configuration;
+* behaviour without NTP;
+* expected clock validity after prolonged outage.
+
+Monotonic timing shall still be used for durations.
+
+=== Required Linux Interfaces
+
+Document all hardware interfaces that must be enabled.
+
+Possible interfaces include:
+
+* GPIO;
+* 1-Wire;
+* I2C;
+* SPI;
+* camera;
+* USB;
+* serial.
+
+Only required interfaces should be enabled.
+
+=== Operating-System Packages
+
+Maintain an explicit list or installation script for required OS packages.
+
+Do not rely on manually remembered package installation.
+
+Example categories:
+
+* Python runtime;
+* venv tooling;
+* SQLite tools;
+* hardware libraries;
+* system diagnostics;
+* build/runtime libraries.
+
+Exact packages shall be defined by the implemented controller.
+
+=== Python Version
+
+Record the supported production Python version.
+
+[source,text]
+----
+Python: TBD
+----
+
+Development and production versions should be intentionally compatible.
+
+=== Python Environment
+
+The production application should run in a dedicated Python environment.
+
+Document:
+
+* environment path;
+* Python executable;
+* installation command;
+* dependency source.
+
+The installation shall support offline deployment.
+
+=== Release Artifact
+
+Record the installed release.
+
+[source,text]
+----
+Aquaponics version: TBD
+Git commit:         TBD
+Build identifier:   TBD
+Install date:       TBD
+----
+
+=== Offline Installation
+
+The production installation shall be possible without Internet access.
+
+The release bundle shall contain all required runtime dependencies or provide a documented offline source for them.
+
+The installer shall not silently contact:
+
+* PyPI;
+* GitHub;
+* third-party package servers.
+
+=== Recommended Filesystem Layout
+
+Unless superseded by a documented decision:
+
+[source,text]
+----
+/opt/aquaponics/
+    releases/
+    current/
+
+/etc/aquaponics/
+    config
+    secrets
+
+/var/lib/aquaponics/
+    database
+    persistent-state
+    backups
+----
+
+Record the actual final paths in this document.
+
+=== Configuration
+
+Production configuration shall be stored separately from application code.
+
+Document:
+
+* configuration location;
+* format;
+* ownership;
+* permissions;
+* backup procedure;
+* validation command.
+
+Configuration shall not be lost during application upgrade.
+
+=== Secrets
+
+Record where production secrets are stored.
+
+Do not include the secret values in this documentation.
+
+Document instead:
+
+* file path;
+* required owner;
+* required permissions;
+* backup mechanism.
+
+=== Database
+
+Record:
+
+[source,text]
+----
+Database engine:        SQLite / TBD
+Database path:          TBD
+Schema version:         TBD
+Backup mechanism:       TBD
+Backup destination:     TBD
+----
+
+The database required for local physical operation shall reside on locally accessible controller storage.
+
+=== Database Initialization
+
+Document how a new database is:
+
+* created;
+* migrated;
+* validated.
+
+Do not assume an empty DB and restored DB use the same procedure.
+
+=== Durable Command Journal
+
+The Engine-owned durable command journal is part of critical operational persistence.
+
+Record:
+
+[source,text]
+----
+Storage location:       operational DB / TBD
+Schema/version:         TBD
+Recovery procedure:     TBD
+Retention policy:       TBD
+----
+
+If the command journal is stored inside the operational database, it shall be backed up and restored transactionally together with that database.
+
+Normal application restart or software reinstall shall not silently clear accepted command history or incomplete-command state required for recovery.
+
+=== Database Restore
+
+Document an explicit restore process.
+
+The procedure shall specify:
+
+* which service is stopped;
+* backup selected;
+* backup validation;
+* replacement method;
+* ownership/permissions;
+* command-journal reconciliation;
+* restart;
+* post-restore validation.
+
+[IMPORTANT]
+====
+Restoring an older database backup may restore command records whose real-world effects occurred after that backup was created.
+
+Pending or incomplete commands from a restored backup shall therefore not be replayed blindly. Physical state, current time, command identity, and command recovery semantics shall be reconciled before normal actuator execution resumes.
+====
+
+=== Production Service Topology
+
+The production controller shall run at least two logically separate services:
+
+[source,text]
+----
+aquaponics-engine.service
+aquaponics-api.service
+----
+
+The Engine is the primary autonomous service.
+
+The API is an external-interface service.
+
+Failure of the API service shall not terminate or suspend physical control by the Engine.
+
+=== Engine Service
+
+Record:
+
+[source,text]
+----
+Service name:       aquaponics-engine.service / TBD
+Unit path:          TBD
+Service user:       TBD
+Executable:         TBD
+Restart policy:     TBD
+Watchdog:           TBD
+----
+
+The Engine shall start without:
+
+* user login;
+* GUI session;
+* Internet;
+* API availability.
+
+=== API Service
+
+Record:
+
+[source,text]
+----
+Service name:       aquaponics-api.service / TBD
+Unit path:          TBD
+Service user:       TBD
+Executable:         TBD
+Restart policy:     TBD
+----
+
+The API may depend on Engine availability for useful operation.
+
+The Engine shall not depend on API availability.
+
+=== Local IPC
+
+Document the selected Engine/API IPC transport.
+
+[source,text]
+----
+Transport:          TBD
+Endpoint:           TBD
+Owner:              TBD
+Group:              TBD
+Permissions:        TBD
+----
+
+A Unix domain socket is a preferred candidate for the single-machine deployment.
+
+If used, the socket should normally live in an OS runtime location such as:
+
+[source,text]
+----
+/run/aquaponics/
+----
+
+The final path shall be documented after implementation.
+
+The IPC endpoint shall not be exposed more broadly than required.
+
+=== Command Acceptance
+
+Operational documentation shall distinguish:
+
+[source,text]
+----
+API request received
+        !=
+Engine command accepted
+----
+
+A state-changing operation is accepted only after the Engine has durably recorded it.
+
+If the Engine is unavailable, the API shall not falsely report successful command acceptance.
+
+=== Operational Database Ownership
+
+Record the Engine database path and permissions.
+
+[source,text]
+----
+Database engine:        SQLite / TBD
+Database path:          TBD
+Owner:                  Engine service user / TBD
+Group:                  TBD
+Permissions:            TBD
+----
+
+The API service shall not require direct read or write access to the operational database.
+
+Normal API queries shall use the Engine query interface rather than direct database access.
+
+This allows the database to remain private Engine infrastructure.
+
+=== CLI Access
+
+Record how the administrative CLI reaches the running Engine.
+
+[source,text]
+----
+CLI executable:         TBD
+Normal transport:       Engine IPC / TBD
+Maintenance procedure:  TBD
+----
+
+Normal administrative commands shall communicate with the running Engine.
+
+Direct GPIO/device diagnostics shall require documented exclusive-maintenance conditions.
+
+=== Maintenance Mode
+
+The production setup shall document how exclusive hardware diagnostics are performed safely.
+
+A valid procedure may require:
+
+[source,text]
+----
+stop API if required
+        |
+        v
+stop Engine or enter explicit maintenance mode
+        |
+        v
+perform hardware diagnostic
+        |
+        v
+exit maintenance
+        |
+        v
+restart / reconcile Engine
+----
+
+The final procedure shall be tested before reliance.
+
+=== Service Startup Order
+
+The deployment shall document service dependencies.
+
+Conceptually:
+
+[source,text]
+----
+Linux / systemd
+      |
+      +--> aquaponics-engine.service
+      |          |
+      |          +--> autonomous physical operation
+      |
+      +--> aquaponics-api.service
+                 |
+                 | local IPC
+                 v
+              Engine
+
+external clients --> API
+----
+
+The Engine service shall not depend on the API service.
+
+API startup failure shall not prevent Engine startup or autonomous physical operation.
+
+The API may start before or after Engine readiness, but it shall handle temporary Engine unavailability and recover communication when the Engine becomes available.
+
+=== Service Validation
+
+Required checks shall include both services.
+
+Examples:
+
+[source,bash]
+----
+systemctl status aquaponics-engine
+systemctl status aquaponics-api
+----
+
+and:
+
+[source,bash]
+----
+journalctl -u aquaponics-engine
+journalctl -u aquaponics-api
+----
+
+Exact names shall match the implemented units.
+
+=== IPC Failure Verification
+
+The production verification procedure shall eventually test:
+
+* API process terminated while Engine continues;
+* IPC endpoint unavailable;
+* API restarted;
+* API reconnects after Engine restart;
+* malformed intent rejected;
+* unauthorized intent rejected;
+* Engine unavailable during command submission.
+
+=== Durable Command Recovery Verification
+
+In a safe test environment, verify:
+
+[source,text]
+----
+submit state-changing request
+        |
+        v
+Engine durably accepts command
+        |
+        v
+interrupt Engine before completion
+        |
+        v
+restart Engine
+        |
+        v
+reconcile command
+        |
+        v
+record deterministic result
+----
+
+The test shall verify that the command is not silently lost.
+
+Where duplicate execution would be unsafe, idempotency behaviour shall also be verified.
+
+=== Engine Health
+
+Document the local health-check mechanism.
+
+Possible output should include:
+
+* Engine version;
+* heartbeat age;
+* control-loop progress or latency;
+* DB health;
+* sensor health;
+* pending-command count;
+* incomplete/ambiguous command count;
+* uptime;
+* active alarms;
+* restart count.
+
+=== Watchdog
+
+Document whether watchdog support is enabled.
+
+[source,text]
+----
+Application heartbeat: TBD
+systemd watchdog:      TBD
+Linux watchdog:        TBD
+Hardware watchdog:     TBD
+Timeouts:              TBD
+----
+
+Watchdog behaviour must be tested before production reliance.
+
+=== Logging
+
+Document:
+
+* journal configuration;
+* persistent journal status;
+* application log location if separate;
+* rotation;
+* retention;
+* disk limits.
+
+Logging must remain available after ordinary reboot where practical.
+
+=== Resource Monitoring
+
+Document how to inspect:
+
+[source,bash]
+----
+free -h
+----
+
+[source,bash]
+----
+df -h
+----
+
+[source,bash]
+----
+df -ih
+----
+
+and process-level Engine memory.
+
+Any automated monitoring mechanism shall also be documented.
+
+=== Undervoltage and Power Diagnostics
+
+Where supported by the selected Raspberry, document the command used to inspect throttling and undervoltage history.
+
+Example on compatible Raspberry systems:
+
+[source,bash]
+----
+vcgencmd get_throttled
+----
+
+The actual production procedure shall be verified against the selected hardware.
+
+=== GPIO Mapping
+
+Maintain an authoritative table.
+
+[cols="1,1,2,2"]
+|===
+|Physical Pin |GPIO |Function |Notes
+
+|TBD
+|TBD
+|TBD
+|TBD
+|===
+
+Do not rely on memory when reconnecting hardware.
+
+=== Sensor Inventory
+
+Maintain an authoritative production table.
+
+[cols="1,2,2,2"]
+|===
+|Logical ID |Device |Connection |Physical Location
+
+|TBD
+|TBD
+|TBD
+|TBD
+|===
+
+=== Actuator Inventory
+
+Maintain an authoritative production table.
+
+[cols="1,2,2,2,2"]
+|===
+|Logical ID |Relay |Physical Device |Normal Behaviour |Safe/Default Behaviour
+
+|TBD
+|TBD
+|TBD
+|TBD
+|TBD
+|===
+
+=== Startup Verification
+
+After installation or replacement hardware boot, verify:
+
+. Linux boot completes.
+. No interactive login is required for Engine startup.
+. Required filesystems mount.
+. systemd starts the Engine without requiring API availability.
+. Configuration validates.
+. Local DB opens.
+. Durable command state can be read.
+. Hardware interfaces initialize.
+. Required sensors are detected.
+. Outputs enter known states.
+. Incomplete prior operations and commands are reconciled according to recovery policy.
+. Engine heartbeat becomes healthy.
+. API service starts independently and can reach the Engine through the configured IPC mechanism.
+. Local frontend becomes available if installed.
+. Core operation works without Internet access.
+
+=== Shutdown Verification
+
+Verify clean shutdown behaviour.
+
+The Engine should:
+
+* stop accepting or initiating new state-changing work;
+* preserve already accepted command state durably;
+* leave incomplete operations in a recoverable state;
+* persist critical state;
+* close DB connections;
+* leave hardware in defined states where required;
+* terminate within configured limits.
+
+=== Reboot Verification
+
+Perform a complete unattended reboot test.
+
+Confirm:
+
+* automatic OS boot;
+* automatic Engine start without API dependency;
+* successful persistent-state and command-journal reconciliation;
+* correct sensor discovery;
+* correct actuator initialization;
+* healthy control loop;
+* API recovery/reconnection where the API is installed.
+
+=== Network-Loss Verification
+
+Disconnect the LAN.
+
+Confirm that core physical control continues.
+
+Expected unavailable functions may include:
+
+* remote UI;
+* remote mobile access;
+* SHMC;
+* e-mail.
+
+Expected remaining functions include:
+
+* Engine;
+* schedules;
+* sensors;
+* actuators;
+* local DB;
+* local Engine/API IPC;
+* local API service where installed, although remote clients cannot reach it over the disconnected LAN.
+
+=== Process-Failure Verification
+
+Terminate the Engine process in a controlled test.
+
+Confirm:
+
+* systemd detects termination;
+* restart policy activates;
+* persistent and physical state are reconciled;
+* accepted incomplete commands are reconciled without silent loss or blind duplication;
+* Engine returns to healthy operation;
+* API communication recovers where applicable;
+* failure remains visible in diagnostics.
+
+=== Sensor-Failure Verification
+
+Disconnect or disable each important sensor in a controlled test.
+
+Verify that the Engine:
+
+* identifies invalid/missing measurement;
+* does not convert failure into plausible data;
+* enters the documented fallback behaviour;
+* raises the appropriate alarm.
+
+=== Database-Failure Verification
+
+In a non-production test environment:
+
+* test invalid DB;
+* test schema mismatch;
+* test restore;
+* test interrupted migration where applicable;
+* verify that a state-changing request is not reported as durably accepted when command persistence fails.
+
+The production biological system must not be endangered during destructive testing.
+
+=== Storage-Full Verification
+
+In a controlled test environment, verify behaviour when storage availability becomes critically low.
+
+The Engine should detect the condition before uncontrolled failure where possible.
+
+If storage exhaustion prevents durable command persistence, new state-changing requests shall not be falsely reported as accepted.
+
+=== Power-Recovery Verification
+
+Test power-loss recovery using safe methodology.
+
+Verify:
+
+* filesystem integrity;
+* DB integrity;
+* automatic boot;
+* automatic service start;
+* startup reconciliation;
+* control recovery.
+
+=== UPS Verification
+
+If a UPS is installed, verify:
+
+* outage detection;
+* controller behaviour on outage;
+* controlled shutdown;
+* restart when power returns;
+* protection against rapid power cycling where supported.
+
+=== Backup Verification
+
+A backup process shall be periodically validated by restoration.
+
+The restore test shall include command-journal consistency and shall verify that restored pending or incomplete commands are reconciled rather than blindly replayed.
+
+Record:
+
+[source,text]
+----
+Last backup test:      TBD
+Backup used:           TBD
+Restore target:        TBD
+Result:                TBD
+----
+
+=== Release Rollback
+
+Document the procedure for returning to the previous known-good application release.
+
+Rollback procedure shall not assume that database migrations are automatically reversible.
+
+Rollback shall also verify that the selected application version can correctly interpret the installed command-journal and operational-state schema.
+
+=== Disaster Recovery
+
+A complete disaster scenario shall assume:
+
+[source,text]
+----
+Raspberry and primary storage are lost.
+----
+
+Recovery should require:
+
+* replacement controller;
+* replacement storage;
+* release bundle;
+* configuration backup;
+* secrets;
+* database backup;
+* hardware documentation.
+
+After restoration, physical state and restored command state shall be reconciled before ordinary actuator execution resumes.
+
+The target is reproducible reconstruction rather than preservation of one irreplaceable machine image.
+
+=== As-Built Record
+
+After every major infrastructure change, update:
+
+* hardware inventory;
+* OS version;
+* storage;
+* network;
+* GPIO map;
+* sensor map;
+* actuator map;
+* software version;
+* DB schema;
+* command-journal schema/recovery semantics;
+* Engine/API service topology;
+* IPC transport and permissions;
+* backup mechanism;
+* watchdog configuration.
+
+=== Final Reproduction Test
+
+The reproduction documentation is considered complete only after someone can recreate a functioning controller by following the documented procedure without relying on undocumented memory.
+
+[IMPORTANT]
+====
+If a required installation fact exists only in the developer's memory, the system is not yet reproducible.
+====

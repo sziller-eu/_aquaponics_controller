@@ -1,0 +1,20 @@
+// ============================================================================
+// _aquaponics_architecture_and_design.adoc
+// ============================================================================
+= Aquaponics - Architecture and Fundamental Design
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectnumlevels: 2
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:hide-uri-scheme: true
+:description: Defines the fundamental software architecture of the Aquaponics controller, including Engine authority, autonomous control, command execution, persistence, hardware abstraction, API boundaries, runtime reliability, recovery, and external integration.
+:toc-title: Table of contents
+:figure-caption:
+
+include::ap_architecture_and_design.adoc[]

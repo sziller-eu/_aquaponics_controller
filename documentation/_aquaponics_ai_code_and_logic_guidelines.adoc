@@ -1,0 +1,20 @@
+// ============================================================================
+// _aquaponics_ai_code_and_logic_guidelines.adoc
+// ============================================================================
+= Aquaponics - AI Code and Logic Guidelines
+:author: Szilard Gabor LADANYI
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectnumlevels: 2
+:icons: media/images/Aquaponics
+:stylesdir: ./css
+:iconsdir: ./icons
+:stylesheet: adoc-github.css
+:hide-uri-scheme: true
+:description: Defines how AI coding assistants shall structure, name, document, log, and present Aquaponics code so that processes remain explicit, hierarchically readable, inspectable, and understandable at every abstraction level.
+:toc-title: Table of contents
+:figure-caption:
+
+include::ap_ai_code_and_logic_guidelines.adoc[]

@@ -1,0 +1,1419 @@
+// ============================================================================
+// ap_ai_code_and_logic_guidelines.adoc
+// ============================================================================
+
+== AI Code and Logic Guidelines
+
+=== Purpose
+
+This document defines how AI coding assistants shall structure, name, document, and present Aquaponics code.
+
+It supplements the architectural, development, and contribution rules defined elsewhere.
+
+The purpose is not merely to produce code that works.
+
+The codebase shall remain understandable and visually inspectable by the human maintainer.
+
+[IMPORTANT]
+====
+Correct code that obscures its own logical process is not considered good Aquaponics code.
+====
+
+
+=== Intended Human Reader
+
+The primary maintainer is an architect and engineer with substantial programming experience, but software development is not his primary professional discipline.
+
+Code shall therefore favor:
+
+* explicit logic;
+* visible process structure;
+* telling names;
+* consistent abstraction levels;
+* predictable control flow;
+* readable state transitions;
+* meaningful logs;
+* documented reasoning;
+* inspectable failure behaviour.
+
+The codebase shall not require specialist knowledge of fashionable programming idioms merely to understand ordinary application logic.
+
+The objective is not to simplify the underlying engineering problem.
+
+The objective is to represent that problem clearly.
+
+
+=== Primary Readability Requirement
+
+A developer reading a method should be able to answer:
+
+* What process is taking place?
+* In what order do the major steps happen?
+* What state enters the process?
+* What state leaves the process?
+* Which steps may cause physical effects?
+* Which steps may persist information?
+* Which steps may fail?
+* What happens when they fail?
+* Why does the process exist in this form?
+
+The code itself should provide most of these answers without requiring reconstruction from implementation details.
+
+
+=== Code as Process Description
+
+High-level application code shall read as a description of the process it performs.
+
+For example, a control cycle may conceptually look like:
+
+[source,python,opts=novalidate]
+----
+def run_control_cycle(self) -> None:
+    self._acquire_observations()
+    self._reconcile_system_state()
+    self._ingest_external_intents()
+    self._materialize_due_scheduled_commands()
+    self._evaluate_control_policies()
+    self._execute_ready_commands()
+    self._persist_cycle_state()
+    self._update_health_heartbeat()
+----
+
+A maintainer should be able to read this method and understand the major sequence without first understanding:
+
+* GPIO;
+* SQLite;
+* IPC;
+* sensor protocol;
+* API transport;
+* individual policy calculations.
+
+The lower-level details belong inside the respective steps.
+
+
+=== The Zoom Principle
+
+Code shall be understandable by progressively zooming into it.
+
+At the highest level:
+
+[source,text]
+----
+Engine
+  |
+  +-- initialize
+  +-- run control cycle
+  +-- recover
+  +-- shut down
+----
+
+Opening `run_control_cycle()` should reveal the next level:
+
+[source,text]
+----
+run control cycle
+  |
+  +-- acquire observations
+  +-- reconcile state
+  +-- process incoming intents
+  +-- evaluate scheduled work
+  +-- evaluate control policies
+  +-- execute commands
+  +-- finalize cycle
+----
+
+Opening `acquire_observations()` should reveal another level:
+
+[source,text]
+----
+acquire observations
+  |
+  +-- read water temperature
+  +-- read water level
+  +-- validate readings
+  +-- update observation state
+----
+
+Each level should act as a readable map of the level immediately below it.
+
+[IMPORTANT]
+====
+A reader should not need to mentally jump several abstraction levels while following one method.
+====
+
+
+=== Abstraction-Level Discipline
+
+Statements grouped together in one orchestration method shall normally operate at a similar abstraction level.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+def run_control_cycle(self) -> None:
+    self._acquire_observations()
+    self._reconcile_system_state()
+    self._evaluate_control_policies()
+    self._execute_ready_commands()
+----
+
+Avoid:
+
+[source,python,opts=novalidate]
+----
+def run_control_cycle(self) -> None:
+    self._acquire_observations()
+
+    GPIO.output(17, GPIO.HIGH)
+
+    session.execute(
+        update(CommandTable)
+        .where(CommandTable.state == "QUEUED")
+    )
+
+    self._evaluate_control_policies()
+----
+
+The second example forces the reader to alternate between:
+
+* domain process;
+* raw hardware operation;
+* persistence implementation;
+* domain process.
+
+That makes the logical process harder to inspect.
+
+Lower-level work shall be delegated to appropriately named methods or components.
+
+
+=== Process Stages
+
+Nontrivial processes should be divided into meaningful stages.
+
+Stage boundaries should correspond to actual engineering concepts rather than arbitrary code length.
+
+Examples include:
+
+* initialization;
+* validation;
+* observation acquisition;
+* state reconciliation;
+* command ingestion;
+* schedule evaluation;
+* policy evaluation;
+* command execution;
+* persistence;
+* recovery;
+* finalization.
+
+A stage may itself contain several lower-level stages.
+
+The same readability rules apply recursively.
+
+
+=== Orchestration Methods
+
+A method whose primary responsibility is coordinating other operations is an orchestration method.
+
+Orchestration methods shall normally:
+
+* remain visually short;
+* expose the sequence of the process;
+* call clearly named operations;
+* avoid implementation details;
+* avoid hidden physical side effects;
+* avoid large inline calculations.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+def start_engine(self) -> None:
+    """Prepare the Engine and enter normal autonomous operation."""
+
+    self._load_and_validate_configuration()
+    self._open_persistence()
+    self._initialize_hardware()
+    self._reconcile_persistent_and_physical_state()
+    self._start_control_loop()
+----
+
+This representation is preferred over placing all five implementations directly inside `start_engine()`.
+
+
+=== Locally High-Level Methods
+
+Not every method is globally high-level.
+
+A method may be high-level relative to its own subsystem.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+def read_water_temperature(self) -> TemperatureObservation:
+    self._locate_sensor()
+    raw_value = self._read_sensor_value()
+    value = self._convert_sensor_value(raw_value)
+    return self._validate_temperature(value)
+----
+
+Within the sensor adapter, this is a locally high-level process.
+
+It should therefore receive the same attention to:
+
+* ordering;
+* naming;
+* documentation;
+* logging where useful;
+* failure semantics.
+
+The readability requirement applies at every abstraction level.
+
+
+=== Telling Names
+
+Names shall communicate domain meaning.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+collect_water_temperature_observation()
+reconcile_actuator_state()
+materialize_due_scheduled_commands()
+execute_ready_commands()
+validate_command_for_execution()
+mark_command_completed()
+----
+
+over names such as:
+
+[source,python,opts=novalidate]
+----
+do_work()
+handle()
+process()
+run2()
+manage_data()
+check_stuff()
+update()
+func_a()
+----
+
+Generic verbs may be appropriate only where the surrounding object already makes the meaning unambiguous.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+temperature_sensor.read()
+command_store.save()
+pump.turn_off()
+----
+
+are sufficiently explicit because the object supplies the missing context.
+
+
+=== Domain Names Before Technical Names
+
+Where possible, names should express the aquaponics/domain concept rather than implementation technology.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+pump.turn_on()
+temperature_sensor.read()
+command_store.claim_next()
+----
+
+instead of exposing:
+
+[source,python,opts=novalidate]
+----
+gpio17.set_high()
+onewire_file.read()
+sqlite_row.update()
+----
+
+outside the infrastructure layer that owns those technical details.
+
+
+=== Avoid Ambiguous Abbreviations
+
+Abbreviations shall only be used when they are well-established within the project or technical domain.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+current_temperature
+scheduled_command
+previous_observation
+execution_result
+----
+
+over:
+
+[source,python,opts=novalidate]
+----
+curr_t
+sch_cmd
+prev_obs
+exec_res
+----
+
+Short names are acceptable for narrow conventional scopes such as:
+
+[source,python,opts=novalidate]
+----
+for command in commands:
+    ...
+----
+
+Clarity takes priority over saving characters.
+
+
+=== Explicit Data Flow
+
+Important data transformations shall remain visible.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+raw_reading = sensor.read_raw()
+observation = validator.validate(raw_reading)
+system_state = reconciler.apply(system_state, observation)
+----
+
+when these represent meaningful domain transitions.
+
+Avoid compressing important steps into an expression whose intermediate meaning disappears:
+
+[source,python,opts=novalidate]
+----
+system_state = reconciler.apply(system_state, validator.validate(sensor.read_raw()))
+----
+
+The compact version may be technically correct.
+
+The explicit version better exposes the process.
+
+
+=== Explicit State Transitions
+
+State-changing code shall make transitions easy to identify.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+command = command_store.claim_next_ready()
+
+if command is None:
+    return
+
+execution = command_executor.execute(command)
+
+if execution.succeeded:
+    command_store.mark_completed(command.id, execution)
+else:
+    command_store.mark_failed(command.id, execution)
+----
+
+A maintainer should not have to infer command-state transitions from unrelated side effects.
+
+
+=== Avoid Hidden Side Effects
+
+A method name shall not conceal major side effects.
+
+A method named:
+
+[source,python,opts=novalidate]
+----
+get_current_temperature()
+----
+
+should not unexpectedly:
+
+* change relay state;
+* modify configuration;
+* delete database records;
+* acknowledge commands.
+
+If a process has important side effects, its name and documentation shall make that reasonably apparent.
+
+
+=== One Authoritative Path Must Remain Visible
+
+Architectural rules shall remain recognizable in code structure.
+
+For example, state-changing external requests shall visibly converge on the Engine command path.
+
+Prefer a structure that can be followed:
+
+[source,text]
+----
+API request
+    |
+    v
+submit intent
+    |
+    v
+Engine ingress
+    |
+    v
+persist command
+    |
+    v
+command executor
+    |
+    v
+hardware adapter
+----
+
+The implementation shall not hide this sequence behind generic frameworks or excessive indirection.
+
+A contributor reviewing the code should be able to locate each major architectural boundary.
+
+
+=== Control-Loop Readability
+
+The Engine control loop is one of the most important pieces of code in the project.
+
+Its high-level sequence shall remain directly readable.
+
+It should not become a long method containing:
+
+* protocol parsing;
+* SQL statements;
+* GPIO instructions;
+* time calculations;
+* policy calculations;
+* exception-recovery implementation.
+
+These belong behind appropriately named operations.
+
+The control loop should function as a process map.
+
+
+=== Similar Operations Should Look Similar
+
+Operations performing conceptually similar tasks should use similar code structures.
+
+For example, sensor acquisition should ideally follow a recognizable pattern:
+
+[source,python,opts=novalidate]
+----
+reading = sensor.read()
+observation = validate_reading(reading)
+state.record_observation(observation)
+----
+
+Different sensor implementations may differ internally.
+
+Their use by the Engine should remain conceptually consistent.
+
+Likewise, command handlers should have recognizable lifecycle semantics rather than each inventing a different execution pattern.
+
+
+=== Functions and Methods
+
+A function or method should normally have one clear purpose.
+
+This does not require artificially tiny functions.
+
+Splitting code is useful when it creates a meaningful conceptual boundary.
+
+Do not split code merely to achieve a line-count target.
+
+A 30-line method representing one coherent algorithm may be clearer than six trivial five-line methods.
+
+Conversely, a 150-line method mixing initialization, persistence, GPIO, validation, and scheduling should normally be decomposed.
+
+
+=== Classes
+
+Classes shall correspond to coherent responsibilities.
+
+Avoid creating a single class merely because all functionality belongs to "Aquaponics".
+
+For example, the new architecture may contain distinct responsibilities for:
+
+* Engine orchestration;
+* state management;
+* command persistence;
+* schedule evaluation;
+* policies;
+* sensor adapters;
+* actuator adapters;
+* API transport;
+* configuration;
+* health monitoring.
+
+These responsibilities should not be merged into one large manager object without a concrete reason.
+
+[NOTE]
+====
+The legacy `EngineAPSystemManager` is useful as an example of visible sequential process presentation.
+
+It is not a required structural model for the new implementation.
+====
+
+
+=== Avoid Premature Abstraction
+
+AI assistants shall not introduce abstractions merely because they are common software patterns.
+
+Do not automatically introduce:
+
+* generic repositories;
+* event buses;
+* dependency-injection frameworks;
+* plugin frameworks;
+* generic device hierarchies;
+* abstract factories;
+* metaprogramming;
+* decorators hiding important control flow.
+
+An abstraction shall solve a concrete project problem.
+
+The cost of understanding an abstraction is itself an engineering cost.
+
+
+=== Prefer Explicit Composition
+
+Dependencies should normally be assembled explicitly.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+engine = AquaponicsEngine(
+    clock=system_clock,
+    command_store=command_store,
+    temperature_sensor=water_temperature_sensor,
+    pump=water_pump,
+)
+----
+
+This is generally preferable to important runtime dependencies appearing implicitly through:
+
+* globals;
+* hidden service locators;
+* import-time mutation;
+* framework magic.
+
+A maintainer should be able to inspect production composition and see what the Engine actually depends on.
+
+
+=== Logging Philosophy
+
+Logs shall help reconstruct the logical process of the running system.
+
+Logging shall occur at meaningful process boundaries.
+
+Examples include:
+
+* Engine starting;
+* configuration loaded;
+* startup reconciliation beginning;
+* startup reconciliation completed;
+* control mode changed;
+* command accepted;
+* command execution started;
+* actuator operation requested;
+* command completed;
+* command failed;
+* sensor became unavailable;
+* degraded mode entered;
+* recovery started;
+* recovery succeeded;
+* shutdown started.
+
+Logs shall describe domain events rather than merely announce arbitrary function calls.
+
+
+=== Logging Levels
+
+Logging levels should preserve signal.
+
+A suggested interpretation is:
+
+`DEBUG`::
+Detailed control-flow information useful during development and diagnosis.
+
+Examples:
+
+* control cycle started;
+* ingress queue contained 2 items;
+* schedule produced no commands;
+* sensor validation details.
+
+`INFO`::
+Meaningful successful operational events.
+
+Examples:
+
+* Engine started;
+* command accepted;
+* pump activation commanded;
+* override enabled;
+* startup reconciliation completed.
+
+`WARNING`::
+Unexpected or degraded conditions from which the system can continue.
+
+Examples:
+
+* noncritical sensor unavailable;
+* command postponed;
+* storage space approaching limit.
+
+`ERROR`::
+A requested or required operation failed.
+
+Examples:
+
+* actuator command failed;
+* database transaction failed;
+* required sensor unavailable.
+
+`CRITICAL`::
+The system can no longer safely provide an essential responsibility.
+
+Logging level selection shall avoid producing an unmanageable stream of `INFO` entries for ordinary high-frequency loop mechanics.
+
+
+=== High-Level Step Logging
+
+Long-running or safety-relevant orchestration processes should log important stage transitions.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+logger.info("Engine startup initiated")
+
+logger.debug("Loading configuration")
+self._load_configuration()
+
+logger.debug("Initializing hardware")
+self._initialize_hardware()
+
+logger.info("Reconciling startup state")
+self._reconcile_startup_state()
+
+logger.info("Engine startup completed")
+----
+
+Routine internal helper calls do not each require their own log entry.
+
+The objective is to make operational progression visible without flooding the log.
+
+
+=== Structured Log Context
+
+Where practical, important logs should include identifying context.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+logger.info(
+    "Command execution started",
+    extra={
+        "command_id": command.id,
+        "command_type": command.type,
+        "origin": command.origin,
+    },
+)
+----
+
+Equivalent structured logging approaches may be used.
+
+A log entry should provide enough context to connect it to:
+
+* a command;
+* a device;
+* an observation;
+* a recovery action;
+* a subsystem;
+
+where relevant.
+
+
+=== Comments
+
+Comments shall primarily explain:
+
+* why;
+* assumptions;
+* constraints;
+* invariants;
+* non-obvious decisions;
+* safety implications;
+* unusual failure handling.
+
+Avoid comments that merely translate obvious Python into English.
+
+Poor:
+
+[source,python,opts=novalidate]
+----
+# increment counter
+counter += 1
+----
+
+Useful:
+
+[source,python,opts=novalidate]
+----
+# Persist the occurrence timestamp rather than the current execution time.
+# This prevents a delayed loop from materializing the same scheduled
+# occurrence again after restart.
+occurrence_id = scheduled_for
+----
+
+
+=== Local Process Comments
+
+Inside a nontrivial algorithm, comments may identify meaningful phases where method extraction would reduce rather than improve readability.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+# Validate all observations before changing authoritative state.
+...
+
+# Reconcile validated observations with the previous logical state.
+...
+
+# Derive control-policy inputs from the reconciled state.
+...
+----
+
+Such comments should identify real conceptual steps.
+
+They shall not be used to justify an otherwise unreadable oversized function.
+
+
+=== Docstrings
+
+Locally high-level methods shall have useful docstrings.
+
+A useful docstring may describe:
+
+* purpose;
+* major responsibility;
+* inputs;
+* result;
+* state mutation;
+* external side effects;
+* important invariants;
+* failure semantics;
+* reason for unusual behaviour.
+
+Example:
+
+[source,python,opts=novalidate]
+----
+def reconcile_startup_state(self) -> None:
+    """Reconcile persisted state with the newly initialized physical system.
+
+    Startup cannot assume that persisted actuator state represents physical
+    reality because the previous process or machine may have stopped
+    unexpectedly.
+
+    This method re-establishes known actuator state before normal command
+    execution is enabled.
+
+    Side effects:
+        - reads persisted runtime state;
+        - inspects available hardware state;
+        - may place actuators into defined startup states;
+        - records reconciliation results.
+
+    Normal command execution must not begin until this method completes.
+    """
+----
+
+Trivial accessors and self-explanatory leaf functions do not require large ceremonial docstrings.
+
+
+=== Document Reasons, Not History Noise
+
+Code comments shall document reasons that remain useful to future readers.
+
+Avoid retaining obsolete conversational history such as:
+
+[source,python,opts=novalidate]
+----
+# changed this because we discussed it Tuesday
+----
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+# Use monotonic time here because wall-clock correction must not alter
+# actuator runtime duration.
+----
+
+Git history and issues preserve development history.
+
+Code should preserve the reason relevant to current behaviour.
+
+
+=== Failure Paths Must Be Readable
+
+Failure handling shall be represented as clearly as the nominal path.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+try:
+    observation = sensor.read()
+except SensorUnavailable as exc:
+    self._record_sensor_failure(sensor, exc)
+    self._apply_sensor_failure_policy(sensor)
+    return
+----
+
+over deeply nested generic exception handling whose effect is difficult to determine.
+
+Safety-related failure behaviour shall not be hidden behind:
+
+[source,python,opts=novalidate]
+----
+except Exception:
+    pass
+----
+
+
+=== Early Returns
+
+Early returns are encouraged when they make guard conditions obvious.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+if command is None:
+    return
+
+if not command.is_due(now):
+    return
+
+if not self._is_execution_allowed(command):
+    self._reject_command(command)
+    return
+
+self._execute_command(command)
+----
+
+This is often easier to inspect than deeply nested conditional structures.
+
+
+=== Conditional Complexity
+
+Complex boolean expressions should be named when the name explains domain meaning.
+
+Instead of:
+
+[source,python,opts=novalidate]
+----
+if sensor.available and not alarm.active and level < minimum and pump.ready:
+    ...
+----
+
+prefer where appropriate:
+
+[source,python,opts=novalidate]
+----
+refill_allowed = (
+    sensor.available
+    and not alarm.active
+    and level < minimum
+    and pump.ready
+)
+
+if refill_allowed:
+    ...
+----
+
+For important domain rules, moving the rule into a named policy method may be clearer still.
+
+
+=== Magic Values
+
+Domain-relevant values shall not be scattered through code as unexplained literals.
+
+Avoid:
+
+[source,python,opts=novalidate]
+----
+if temperature > 32:
+    ...
+----
+
+when `32` represents an operating threshold.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+if temperature > configuration.maximum_water_temperature:
+    ...
+----
+
+or an appropriately named domain constant where configuration is not intended.
+
+
+=== Enumerated States
+
+Meaningful state values should use explicit types or enumerations rather than unrelated strings and integers where this improves clarity.
+
+Prefer concepts such as:
+
+[source,python,opts=novalidate]
+----
+CommandState.QUEUED
+CommandState.EXECUTING
+CommandState.DONE
+CommandState.FAILED
+----
+
+over:
+
+[source,python,opts=novalidate]
+----
+"q"
+1
+2
+"bad"
+----
+
+The objective is for states to explain themselves when encountered in code.
+
+
+=== Data Models
+
+Important domain information should have explicit models.
+
+For example:
+
+* observation;
+* command;
+* execution result;
+* actuator state;
+* alarm;
+* schedule occurrence;
+* operating mode.
+
+Avoid passing large anonymous dictionaries through several layers when their fields represent a stable domain concept.
+
+A reader should be able to discover the available information and its meaning from the model definition.
+
+
+=== Mutation Discipline
+
+Mutation of authoritative state should occur at identifiable locations.
+
+Avoid allowing unrelated components to modify Engine state arbitrarily.
+
+A contributor should be able to identify:
+
+* who owns state;
+* who may change it;
+* when it changes;
+* why it changes.
+
+This is particularly important for:
+
+* actuator state;
+* command state;
+* operating mode;
+* overrides;
+* alarms;
+* configuration.
+
+
+=== Concurrency
+
+Concurrency shall not be introduced casually.
+
+If asynchronous execution, threads, or multiple processes are required:
+
+* ownership must remain explicit;
+* shared state must be minimized;
+* synchronization must be understandable;
+* blocking behaviour must be bounded;
+* failure behaviour must be documented.
+
+The code should preserve a readable logical sequence even when the implementation uses concurrency.
+
+Concurrency is an implementation mechanism.
+
+It shall not become the primary way a maintainer must understand domain behaviour.
+
+
+=== Asynchronous Code
+
+Asynchronous code shall still expose process structure.
+
+Prefer:
+
+[source,python,opts=novalidate]
+----
+async def receive_intent(self) -> Intent:
+    payload = await self._receive_payload()
+    request = self._decode_request(payload)
+    return self._validate_request(request)
+----
+
+over large asynchronous functions intermixing:
+
+* socket lifecycle;
+* authorization;
+* domain validation;
+* database writes;
+* command execution.
+
+Async boundaries should follow responsibility boundaries where practical.
+
+
+=== Error Messages
+
+Error messages shall identify:
+
+* what failed;
+* which object or operation was involved;
+* enough context for diagnosis.
+
+Prefer:
+
+[source,text]
+----
+Failed to read water-temperature sensor 'tank-main-temp': CRC validation failed.
+----
+
+over:
+
+[source,text]
+----
+Sensor error.
+----
+
+
+=== Tests as Logic Documentation
+
+Tests shall also be readable.
+
+A test should make visible:
+
+* starting state;
+* action;
+* expected result.
+
+A useful structure is:
+
+[source,python,opts=novalidate]
+----
+def test_due_pump_command_is_executed_once():
+    # Arrange
+    clock.set(...)
+    command_store.add(...)
+
+    # Act
+    engine.run_control_cycle()
+
+    # Assert
+    assert pump.commands == [...]
+    assert command_store.state(...) is CommandState.DONE
+----
+
+Tests should help a future contributor understand intended behaviour.
+
+Test cleverness is subject to the same readability requirements as production code.
+
+
+=== Safety-Critical Logic
+
+Safety-related code requires especially explicit representation.
+
+Such code shall favor:
+
+* named conditions;
+* visible state transitions;
+* explicit fallback;
+* explicit logging;
+* dedicated tests;
+* documented rationale.
+
+Compactness shall not be prioritized over auditability.
+
+
+=== Avoid Cleverness
+
+AI assistants often generate technically sophisticated abstractions automatically.
+
+For this project, sophistication is not itself a benefit.
+
+Prefer:
+
+* explicit loops;
+* explicit branches;
+* explicit state objects;
+* explicit composition;
+* direct method calls;
+
+when they express the logic clearly.
+
+Avoid unnecessary:
+
+* metaprogramming;
+* reflective dispatch;
+* nested comprehensions;
+* dense functional chains;
+* operator tricks;
+* implicit registration;
+* dynamic monkey-patching.
+
+If a simpler implementation is longer but significantly easier to inspect, the simpler implementation is normally preferred.
+
+
+=== Avoid Line-Count Optimization
+
+Fewer lines do not imply better code.
+
+Do not compress a meaningful process solely to reduce line count.
+
+For example:
+
+[source,python,opts=novalidate]
+----
+commands = [executor.execute(c) for c in store.ready() if policy.allowed(c)]
+----
+
+may hide several important stages.
+
+A more explicit sequence may be preferable:
+
+[source,python,opts=novalidate]
+----
+ready_commands = command_store.get_ready_commands()
+
+for command in ready_commands:
+    if not execution_policy.is_allowed(command):
+        continue
+
+    command_executor.execute(command)
+----
+
+Readability and auditability take priority over compactness.
+
+
+=== Avoid Excessive Fragmentation
+
+The opposite extreme is also undesirable.
+
+Do not turn every two lines into a separate method.
+
+A method extraction is useful when the new method represents a meaningful concept.
+
+Poor decomposition can force a reader to jump through many files and methods merely to understand a simple operation.
+
+The goal is hierarchical clarity, not maximal function count.
+
+
+=== File-Level Organization
+
+A module should have one recognizable responsibility.
+
+Related concepts should remain discoverable together.
+
+Avoid modules that become miscellaneous collections such as:
+
+[source,text]
+----
+helpers.py
+utils.py
+common.py
+misc.py
+stuff.py
+----
+
+unless their responsibility is genuinely coherent and well-defined.
+
+Prefer domain-specific module names.
+
+
+=== Source-File Reading Order
+
+Where practical, a source file should be understandable in a natural top-down reading order.
+
+A useful pattern is:
+
+[source,text]
+----
+public class / public interface
+
+    public orchestration methods
+
+    subsystem-level private methods
+
+    lower-level implementation helpers
+----
+
+This is not an absolute formatting rule.
+
+The objective is that important behaviour is easy to locate.
+
+
+=== Architectural Boundaries Must Be Visible in Imports
+
+Imports should help reveal architectural responsibility.
+
+A domain module importing:
+
+* GPIO libraries;
+* FastAPI;
+* SQLite implementation details;
+
+is a warning that boundaries may have been crossed.
+
+AI assistants shall inspect import direction when introducing new dependencies.
+
+
+=== AI Implementation Procedure
+
+Before implementing nontrivial functionality, an AI assistant shall:
+
+. read the relevant architecture documentation;
+. identify the abstraction level of the requested change;
+. identify the component that owns the behaviour;
+. identify inputs, outputs, state changes, and side effects;
+. identify failure behaviour;
+. outline the high-level process;
+. implement the process using telling names and consistent abstraction levels;
+. add logs at meaningful operational boundaries;
+. add local documentation where reasoning is non-obvious;
+. add tests that expose the intended behaviour;
+. verify that no architectural shortcut was introduced.
+
+
+=== AI Change Review
+
+Before presenting substantial code as complete, an AI assistant should review it from the maintainer's perspective.
+
+Ask:
+
+* Can the primary process be understood by reading the orchestration method?
+* Are consecutive calls at a similar abstraction level?
+* Are names meaningful without opening every implementation?
+* Are physical side effects visible?
+* Are persistence side effects visible?
+* Are important state transitions explicit?
+* Are failure paths understandable?
+* Are logs useful at the appropriate abstraction level?
+* Do comments explain reasons rather than syntax?
+* Are docstrings present where a method coordinates important behaviour?
+* Has unnecessary abstraction been introduced?
+* Has implementation detail leaked into domain orchestration?
+* Could the same logic be expressed more plainly without weakening the design?
+
+If the answer reveals unnecessary cognitive load, the code should be improved before acceptance.
+
+
+=== Maintainer Traceability Requirement
+
+For important runtime processes, the maintainer should be able to trace execution manually.
+
+For example:
+
+[source,text]
+----
+control cycle
+    |
+    v
+collect observations
+    |
+    v
+reconcile state
+    |
+    v
+evaluate policies
+    |
+    v
+create command
+    |
+    v
+persist command
+    |
+    v
+execute command
+    |
+    v
+operate adapter
+    |
+    v
+physical device
+----
+
+At each step, it should be reasonably straightforward to locate the corresponding source code.
+
+Architecture, naming, logging, and file structure shall support this traceability.
+
+
+=== Legacy-Code Interpretation
+
+Legacy Aquaponics code may be consulted for:
+
+* historical behaviour;
+* proven physical assumptions;
+* previous control logic;
+* terminology;
+* operational experience.
+
+It shall not automatically determine the structure of the new implementation.
+
+For example, the legacy Engine exposes a visually understandable sequence of high-level stages in its main loop.
+
+That characteristic is valuable.
+
+The fact that many unrelated responsibilities existed inside one class is not a requirement to preserve that class structure.
+
+AI assistants shall distinguish between:
+
+* behaviour worth retaining;
+* readability techniques worth retaining;
+* architecture that has intentionally been replaced.
+
+
+=== Guiding Principle
+
+[IMPORTANT]
+====
+Write Aquaponics code so that the maintainer can follow the engineering process by reading the code.
+
+At every abstraction level:
+
+* expose the sequence;
+* group similar-level operations;
+* use names that explain intent;
+* document the reason for non-obvious decisions;
+* log meaningful high-level events;
+* keep state transitions visible;
+* keep side effects identifiable;
+* prefer clarity over cleverness.
+
+The codebase is not only executable software.
+
+It is also the inspectable formal representation of how the physical system is controlled.
+====

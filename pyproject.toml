@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aquaponics-controller"
+version = "0.0.0"
+description = "Open-source, offline-first Aquaponics controller for autonomous monitoring and control of scalable physical aquaponics systems."
+readme = "README.md"
+# Provisional baseline; the production version is selected together with the
+# Raspberry Pi operating system (see documentation/ap_development_and_operations.adoc).
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "sziller.eu" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/sziller-eu/_aquaponics_controller"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

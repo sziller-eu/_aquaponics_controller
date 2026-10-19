@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Aquaponics controller
+#   Local IDE configuration and workspace state (PyCharm)
+.idea/
+#   Generated AsciiDoc HTML output (sources are the .adoc files)
+documentation/*.html

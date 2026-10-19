@@ -1291,9 +1291,62 @@ is a warning that boundaries may have been crossed.
 AI assistants shall inspect import direction when introducing new dependencies.
 
 
+=== AI Development Session Initialization
+
+An AI coding assistant may start a development session with no knowledge of earlier conversations or implementation decisions.
+
+The repository must therefore be sufficient to establish the project's conventions without conversation history.
+
+==== Repository as Authoritative Context
+
+At the beginning of a new development session, an AI assistant shall obtain its project context from the current repository.
+
+Previous conversation history, retained memory, and earlier implementation descriptions are supplementary information only.
+
+They shall not override the current repository documentation.
+
+==== Current Working State
+
+Before proposing or implementing changes, the assistant should establish:
+
+* the active Git branch;
+* the current working-tree status;
+* relevant uncommitted modifications;
+* the repository's existing structure;
+* the documentation relevant to the requested task.
+
+The assistant shall not assume that the GitHub default branch contains the latest development decisions.
+
+The active working tree may contain newer, not-yet-integrated documentation and implementation changes.
+
+The assistant shall respect these changes and shall not discard them without authorization.
+
+==== Documentation Priority
+
+The authoritative project documentation consists of the maintained AsciiDoc source documents under `documentation/`.
+
+The assistant shall identify and read the documents relevant to its assignment before implementation.
+
+Generated HTML documentation is not the authoritative source.
+
+If documentation contains contradictory instructions, the assistant shall identify the contradiction rather than silently selecting whichever instruction appears more convenient.
+
+==== Session Independence
+
+Instructions and implementation decisions that establish lasting project conventions shall be recorded in repository documentation.
+
+An assistant shall not assume that future development sessions will have access to previous conversations.
+
+Information necessary for continued development should therefore be recoverable from the repository itself.
+
+This does not require documenting every conversation or temporary implementation detail.
+
+The objective is to preserve decisions that materially affect future development.
+
+
 === AI Implementation Procedure
 
-Before implementing nontrivial functionality, an AI assistant shall:
+After session initialization and before implementing nontrivial functionality, an AI assistant shall:
 
 . read the relevant architecture documentation;
 . identify the abstraction level of the requested change;

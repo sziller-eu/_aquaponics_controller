@@ -1,7 +1,6 @@
 // ============================================================================
 // ap_development_and_operations.adoc
 // ============================================================================
-
 == Development and Operations
 
 === Purpose
@@ -205,11 +204,41 @@ Additional states may be introduced if they serve a clear operational purpose.
 Avoid process complexity that provides no engineering value.
 
 
-=== Issue-Driven Development
+=== Development Tasks and GitHub Issues
 
-Meaningful development work should normally begin with a GitHub issue.
+Development work shall be organized into identifiable, reasonably bounded tasks.
 
-An issue should identify:
+GitHub issues are recommended for substantial, independently trackable work, particularly when the work involves:
+
+* significant implementation changes;
+* architectural decisions;
+* multiple development stages;
+* collaboration between contributors;
+* changes requiring formal review or tracking.
+
+GitHub issues are not mandatory.
+
+Development may proceed without a dedicated issue when this is appropriate for the work being performed.
+
+Examples include:
+
+* repository setup;
+* exploratory development;
+* small maintenance tasks;
+* documentation improvements;
+* development infrastructure changes;
+* other coherent and appropriately scoped tasks.
+
+The absence of a GitHub issue does not relax requirements concerning architectural consistency, implementation quality, testing, documentation, or review.
+
+These rules apply equally to human and AI-assisted development.
+
+Both feature-branch naming conventions are valid:
+
+* `feature/<short-description>`
+* `feature/<issue-number>-<short-description>`
+
+Where an issue exists, it should identify:
 
 * problem or objective;
 * affected subsystem;
@@ -221,7 +250,7 @@ An issue should identify:
 
 Large features should be decomposed into parent and child issues when useful.
 
-Implementation work shall not silently expand beyond issue scope merely because adjacent refactoring appears attractive.
+Implementation work shall not silently expand beyond the scope of its task or issue merely because adjacent refactoring appears attractive.
 
 
 === Suggested Project Fields
@@ -260,31 +289,71 @@ Possible `Type` values include:
 
 === Branching
 
-Work should normally occur on short-lived issue or feature branches.
+The repository uses a three-level branching model:
 
-Branch names should identify the issue or task where practical.
+[source,text]
+----
+feature/<short-description>
+feature/<issue-number>-<short-description>
+        |
+        |  pull request
+        v
+    staging
+        |
+        |  pull request
+        v
+  production
+----
+
+`production`::
+The highest-level branch.
+It contains approved, stable, production-ready code and is the repository's GitHub default branch.
+Direct development on `production` is prohibited.
+
+`staging`::
+The integration branch for completed development work.
+Completed features are integrated and tested here before promotion to `production`.
+Direct development on `staging` should normally be avoided.
+
+`feature/<short-description>` or `feature/<issue-number>-<short-description>`::
+Short-lived development branches for individual development tasks or coherent groups of changes.
+Every feature branch originates from `staging`.
+
+No additional permanent branches shall be introduced without a documented architectural decision.
+
+Both naming conventions are valid.
+An issue number is required in the branch name only when the branch is associated with a dedicated GitHub issue.
+A GitHub issue is not required for every development task.
+Bug fixes and maintenance work follow the same naming patterns.
 
 Examples:
 
 [source,text]
 ----
-issue/42-water-temperature-adapter
+feature/tree
 feature/local-health-endpoint
-fix/startup-db-recovery
+feature/42-water-temperature-adapter
+feature/57-startup-db-recovery
 ----
 
-The main branch should represent a releasable state.
+Completed feature branches are integrated into `staging` through pull requests.
 
-A permanently divergent production branch should not be introduced without a concrete need.
+Validated changes are promoted from `staging` into `production` through pull requests.
+
+The `production` branch shall represent a releasable state.
 
 
 === Pull Requests
 
-Changes should normally enter the main branch through pull requests.
+Changes shall enter the shared branches through pull requests only:
+
+* a feature branch is merged into `staging`;
+* `staging` is promoted into `production`.
 
 A pull request should:
 
-* reference the relevant issue;
+* target the correct branch (`staging` for feature work, `production` for promotion from `staging`);
+* reference the relevant issue where one exists;
 * describe the implementation;
 * identify important architectural decisions;
 * document tests performed;
@@ -1236,10 +1305,11 @@ The preferred lifecycle is:
 
 [source,text]
 ----
-Issue
+Development Task
+(GitHub issue optional)
   |
   v
-Development Branch
+Feature Branch (from staging)
   |
   v
 Tests
@@ -1248,7 +1318,16 @@ Tests
 Pull Request
   |
   v
-Main
+Staging
+  |
+  v
+Validation
+  |
+  v
+Pull Request
+  |
+  v
+Production
   |
   v
 Version Tag
@@ -2140,6 +2219,8 @@ Code and documentation shall not intentionally describe different systems.
 AI coding agents may be used extensively.
 
 Before substantial implementation work, an AI agent should receive the relevant project documentation.
+
+A new AI session shall initialize its project context from the current repository, as described in the AI Code and Logic Guidelines chapter ("AI Development Session Initialization").
 
 AI agents shall not treat implementation convenience as authorization to redesign architectural boundaries.
 

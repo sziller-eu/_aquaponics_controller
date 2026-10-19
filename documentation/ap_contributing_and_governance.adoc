@@ -1,7 +1,6 @@
 // ============================================================================
 // ap_contributing_and_governance.adoc
 // ============================================================================
-
 == Contributing and Governance
 
 === Purpose
@@ -45,11 +44,36 @@ A locally convenient shortcut shall not bypass:
 * runtime safety;
 * offline autonomy.
 
-=== Issue-First Principle
+=== Development Tasks and GitHub Issues
 
-Substantial changes should normally start from a GitHub issue.
+Development work shall be organized into identifiable, reasonably bounded tasks.
 
-The issue should establish:
+GitHub issues are recommended for substantial, independently trackable work, particularly when the work involves:
+
+* significant implementation changes;
+* architectural decisions;
+* multiple development stages;
+* collaboration between contributors;
+* changes requiring formal review or tracking.
+
+GitHub issues are not mandatory.
+
+Development may proceed without a dedicated issue when this is appropriate for the work being performed.
+
+Examples include:
+
+* repository setup;
+* exploratory development;
+* small maintenance tasks;
+* documentation improvements;
+* development infrastructure changes;
+* other coherent and appropriately scoped tasks.
+
+The absence of a GitHub issue does not relax requirements concerning architectural consistency, implementation quality, testing, documentation, or review.
+
+These rules apply equally to human and AI-assisted development.
+
+Whether the task is described in an issue or in another form, its description should establish:
 
 * motivation;
 * scope;
@@ -57,9 +81,34 @@ The issue should establish:
 * acceptance criteria;
 * affected components.
 
-This is especially important for AI-assisted work.
+A clearly bounded task is especially important for AI-assisted work.
 
 An AI agent should not interpret an implementation request as permission to redesign adjacent architecture.
+
+=== Branching Model
+
+Contributions follow the repository branching model:
+
+[source,text]
+----
+feature/<short-description>
+feature/<issue-number>-<short-description>
+    -> staging
+    -> production
+----
+
+* Feature branches originate from `staging`.
+* Both feature-branch naming conventions are valid; an issue number is required in the branch name only when the branch is associated with a dedicated GitHub issue.
+* Completed features are integrated into `staging` through pull requests.
+* Validated changes are promoted from `staging` into `production` through pull requests.
+* Direct development on `production` is prohibited.
+* Direct development on `staging` should normally be avoided.
+
+`production` is the GitHub default branch and holds approved, production-ready code.
+
+Contributors shall not introduce additional permanent branches.
+
+The complete workflow is defined in the Development and Operations chapter.
 
 === Understand Before Replacing
 
@@ -406,6 +455,8 @@ The human maintainer remains responsible for accepting:
 
 AI agents should be given the relevant project documentation before performing substantial work.
 
+A new AI session shall initialize its project context from the current repository, as described in the AI Code and Logic Guidelines chapter ("AI Development Session Initialization").
+
 === AI Context Priority
 
 When an AI agent receives conflicting information, the preferred hierarchy is:
@@ -415,6 +466,16 @@ When an AI agent receives conflicting information, the preferred hierarchy is:
 . current accepted GitHub issues/decisions;
 . current implementation;
 . historical discussion.
+
+Explicit current task instructions define the immediate work.
+Established architecture, safety requirements, and governance constrain how that work may be implemented.
+
+An ordinary implementation instruction does not implicitly authorize violating an established architectural constraint.
+
+When an instruction conflicts with the architecture, safety requirements, or governance, the AI agent shall identify and report the conflict rather than silently overriding either.
+
+The project owner may explicitly authorize an architectural change.
+Such a change shall be reflected in the authoritative repository documentation.
 
 An AI agent shall not infer permission to change an architectural invariant merely because older code violates the desired architecture.
 

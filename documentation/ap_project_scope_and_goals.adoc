@@ -303,6 +303,19 @@ The project does not require all optional subsystems to exist before the core co
 
 The minimum useful system is an autonomous physical controller capable of safely operating the essential aquaponics installation.
 
+The Aquaponics Controller is a new implementation.
+
+An earlier (legacy) Aquaponics controller exists.
+It may be consulted for historical context, physical operating experience, and useful ideas.
+
+It does not define the requirements of this project:
+
+* no legacy functionality is automatically required;
+* no legacy class or module structure must be preserved;
+* behavioural compatibility with the legacy controller is not a project requirement.
+
+The project scope and architecture documented here determine what functionality is implemented.
+
 === Design Priority
 
 When design goals conflict, the approximate priority order is:

@@ -1360,6 +1360,13 @@ After session initialization and before implementing nontrivial functionality, a
 . add tests that expose the intended behaviour;
 . verify that no architectural shortcut was introduced.
 
+This procedure serves the following development priorities:
+
+* Human understanding of the implementation is essential.
+* Correctness, reliability, and maintainability take precedence over implementation speed.
+* Development should proceed incrementally, with independently verifiable results where practical.
+* AI assistants handle implementation details but do not independently make significant architectural decisions; such decisions remain subject to explicit human review.
+
 
 === AI Change Review
 

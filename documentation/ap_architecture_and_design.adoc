@@ -1844,6 +1844,8 @@ Possible functions include:
 
 The CLI should reuse domain/service logic rather than create a second controller implementation.
 
+Authorization of local administrative access is described in "Local Administrative Access".
+
 === Authentication and Authorization
 
 External interaction shall be authenticated and authorized.
@@ -1857,6 +1859,122 @@ Capabilities should distinguish at least conceptually:
 * administration.
 
 Local physical control shall not depend on continuously contacting a remote authentication server.
+
+==== Independent Authorization Boundaries
+
+Three security responsibilities are distinct and independent:
+
+. Linux access control, which authorizes local processes and service identities;
+. REST API application authorization, which authorizes individual application users;
+. Engine command enforcement, which determines which command capabilities are available to the connecting service or interface, and validates commands against operational and safety requirements.
+
+Conceptually:
+
+[source,text]
+----
+Local operator                      Application user
+      |                                    |
+      | Linux identity                     | application authentication
+      | and permissions                    | and authorization
+      |                                    | (REST API, boundary 2)
+      |                                    v
+      |                              REST API service
+      |                                    |
+      |                                    | Linux service identity
+      |                                    | and permissions
+      v                                    v
+          Restricted local IPC (boundary 1)
+                       |
+                       v
+                    ENGINE
+       enforces command capabilities and
+         validates commands (boundary 3)
+----
+
+The Engine does not maintain a separate user-authentication system.
+It may rely on Linux-authenticated client identities, restricted interfaces, and the capabilities assigned to them.
+No additional Engine username and password system is implied.
+
+Satisfying one boundary does not satisfy the others.
+
+The administrative CLI and the REST API remain separate Engine clients with separately assigned capabilities.
+
+An API user's administrative role shall not automatically confer Linux administrative privileges.
+An application administrator does not thereby become a Linux administrator.
+
+The maximum capabilities available through the REST API are constrained by the permissions granted to the API service.
+
+A valid API request shall satisfy all applicable authorization and Engine safety requirements.
+
+==== Local Administrative Access
+
+The Engine shall support a local administrative CLI (see "Administrative CLI").
+The CLI is a client of the Engine, not a separate controller.
+
+Local administrative authorization shall rely on Linux identities, privileges, and access controls.
+Authorized operators shall not require a separate Aquaponics application login for local administrative operations.
+
+Linux authorization may use dedicated groups or service permissions.
+Engine administration does not necessarily require general root access.
+
+Local commands shall reach the Engine through a restricted IPC interface, accessible only to authorized local identities.
+The exact transport remains an implementation decision (see "Transport Is Not Command Semantics").
+
+Linux access control permits a client to use the administrative interface.
+It does not exempt an operation from Engine command enforcement and validation, the unified command path, or the maintenance conditions described in "CLI Command Semantics".
+
+Illustrative implementation examples, which are not architectural decisions, include filesystem permissions on a local socket, membership of a dedicated Linux group, and the credentials of the connecting process.
+
+==== REST API Service Identity and Authorization
+
+The Engine and the REST API shall run under separate Linux service identities.
+
+The REST API service identity shall be restricted to the capabilities required by its intended operations.
+
+Application users authenticated through the REST API are not automatically represented by corresponding Linux user accounts.
+
+The REST API shall enforce application-level authentication and authorization (see "API Command Semantics").
+Its endpoints shall expose only explicitly supported functionality.
+
+The API service's own Linux permissions and the command capabilities the Engine assigns to it shall independently restrict which commands it may submit.
+API-level authorization is therefore not the only restriction on what the REST API can cause the Engine to do.
+
+The Engine retains independent command enforcement for the API service as a connecting interface (boundary 3 in "Independent Authorization Boundaries").
+It does not authenticate individual application users.
+
+==== Elevated REST Operations
+
+Administrative REST operations may be introduced deliberately in future development.
+
+Such operations require explicit authorization and appropriately restricted Engine-side capabilities.
+
+They shall not implicitly grant arbitrary Linux administration or unrestricted access to the Engine's administrative interface.
+
+The exact future REST API role hierarchy and permission matrix remain undecided.
+
+==== Shared Client Protocol
+
+The CLI and the REST API may use a common client protocol or command representation.
+
+The REST API is conceptually a restricted Engine client.
+It need not execute terminal commands as subprocesses.
+
+Both interfaces remain subject to the Engine's authoritative command-handling requirements (see "Unified Command Execution Architecture" and "Durable Command Journal").
+Sharing a protocol creates no exception to command persistence or physical safety rules.
+
+==== Authorization Details Not Prescribed
+
+This document does not prescribe:
+
+* local socket paths;
+* Linux user or group names;
+* IPC libraries;
+* API endpoint names;
+* authentication frameworks;
+* role definitions;
+* command schemas.
+
+These remain implementation or later design decisions.
 
 === SHMC Compatibility
 

@@ -1561,7 +1561,9 @@ Prefer:
 
 Privileges should be limited to those actually required.
 
-The API may use the same or a separate service identity depending on the final IPC and permission model.
+The Engine and the API shall run under separate Linux service identities.
+
+The API service identity shall be restricted to the capabilities required by its intended operations.
 
 The API shall not receive hardware privileges merely because the Engine requires them.
 

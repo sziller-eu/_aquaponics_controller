@@ -187,7 +187,7 @@ The hostname should remain stable across ordinary software upgrades.
 
 Document all required local accounts.
 
-The Engine should run under a dedicated service account.
+The Engine shall run under a dedicated service account, separate from the API service account (see below).
 
 Example structure:
 
@@ -195,12 +195,12 @@ Example structure:
 ----
 Administrative user:       TBD
 Engine service user:       aquaponics / TBD
-API service user:          same as Engine / separate / TBD
+API service user:          separate from the Engine service user / TBD
 ----
 
 The Engine service user shall not have unrestricted privileges unless specifically required.
 
-If the API uses a separate service account, document its groups and permissions independently. The API account shall not receive hardware privileges merely because the Engine requires them.
+The Engine and the API shall run under separate service accounts. Document the groups and permissions of each account independently. The API account shall be restricted to the capabilities required by its intended operations and shall not receive hardware privileges merely because the Engine requires them.
 
 === SSH
 

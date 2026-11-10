@@ -986,6 +986,29 @@ Telemetry may be:
 * downsampled;
 * selectively persisted.
 
+=== Logging, History, and Traceability
+
+Three kinds of record serve different purposes and shall be distinguished.
+
+Operational diagnostic logging::
+Software execution details, warnings, exceptions, resource problems, startup and shutdown events, and operational health (see "Logging").
+
+Durable command and execution history::
+Accepted commands, execution attempts, results, and relevant physical feedback.
+It shall support analysis of interrupted or ambiguous operations.
+Repeating an interrupted command shall not be assumed to be safe (see "Command Lifecycle" and "Command Idempotency").
+
+State and observation history::
+Measurements, relevant state transitions, and snapshots that support investigation and recovery (see "State History").
+
+Diagnostic logs may mention events such as command issue, but they are not the durable command history.
+
+The architecture shall support correlating related records across Engine executions and restarts.
+
+Logging and persistence shall remain operationally bounded over long periods (see "Disk Protection").
+
+Database schemas and logging libraries are not prescribed here.
+
 === Persistence
 
 The production Engine shall use local authoritative persistence.
@@ -1121,6 +1144,51 @@ The system must define when to:
 * restore from backup;
 * refuse unsafe automatic operation.
 
+=== Persistence for Recovery and Investigation
+
+The Engine shall persist sufficient information to support the defined recovery process and operational investigation.
+
+The persistence responsibilities are distinct:
+
+[cols="2,3",options="header"]
+|===
+|Information |Role in recovery and investigation
+
+|System configuration
+|Defines how the Engine is to operate.
+
+|Last-known operational state
+|Starting point for reconciliation. It is not current physical truth (see "Restart and Startup Reconciliation").
+
+|Accepted commands
+|Accepted work that shall not be silently lost (see "Durable Command Journal").
+
+|Command execution attempts and outcomes
+|Show what was attempted and what resulted, including ambiguous outcomes (see "Command Lifecycle").
+
+|Measurements and their validity
+|Allow observations to be judged for validity and freshness.
+
+|Significant state transitions
+|Explain how the system reached its current state.
+
+|Faults and recovery activities
+|Record unresolved faults, retries, escalation, and recovery.
+
+|Historical observations and snapshots
+|Support investigation of past behaviour.
+|===
+
+Not every temporary runtime variable needs to be persisted.
+
+Persisted information shall be sufficient to support the defined recovery process, subject to storage integrity and hardware availability.
+
+Recovery guarantees shall be realistic.
+For example, destroyed storage or inaccessible critical hardware may prevent complete recovery.
+The Engine shall detect such limitations (see "Database Integrity") and shall not silently assume normal operating conditions.
+
+This section does not redefine the unified command path or the durable command journal.
+
 === Backup
 
 A live database is not a backup.
@@ -1172,6 +1240,87 @@ Application-state recovery
       v
 Monitoring and notification
 ----
+
+=== Engine Lifecycle
+
+The Engine lifecycle consists of startup, a continuous operating loop, and termination.
+
+Planned and unexpected termination have different consequences:
+
+[source,text]
+----
+Startup (including state reconciliation)
+   |
+   v
+Continuous operating loop
+   |
+   +--> Planned, controlled shutdown
+   |         |
+   |         v
+   |      Engine stopped
+   |      (remains stopped until deliberately started)
+   |
+   +--> Unexpected termination
+             |
+             v
+          Restart according to the configured
+          supervision and recovery policy
+             |
+             v
+          Startup (including state reconciliation)
+----
+
+The intended operation is continuous and indefinite.
+
+Intentional maintenance shutdowns are nevertheless valid.
+
+Unexpected termination is an interruption from which the Engine is designed to recover.
+It is not the expected end of normal operation.
+
+Every startup, whether after an unexpected termination or after a deliberate start, performs the required state reconciliation (see "Restart and Startup Reconciliation").
+
+==== Planned Termination
+
+The Engine shall support deliberate, controlled shutdown (see "Clean Shutdown").
+
+A deliberate, controlled shutdown leaves the Engine stopped.
+A deliberate stop shall not automatically trigger a restart.
+Process supervision shall therefore not treat a deliberate stop as a failure to be recovered.
+
+The Engine remains stopped until it is deliberately started again, for example by an operator or by the next boot-time service startup.
+
+During a controlled shutdown, the Engine shall complete or safely interrupt ongoing activities according to their individual requirements, preserve necessary information, and release resources appropriately.
+
+Physical equipment shall be left in its defined safe condition, as established by its equipment-specific failure policy (see "Equipment-Specific Failure Policy").
+
+==== Unexpected Termination
+
+The Engine may stop without warning because of, for example:
+
+* power failure;
+* operating-system failure;
+* memory exhaustion;
+* hardware failure;
+* software defects;
+* external process termination;
+* other unexpected interruptions.
+
+Application-level shutdown handlers cannot be assumed to execute after such failures.
+
+The architecture shall therefore support recovery without depending on successful shutdown processing.
+
+Every startup is consequently treated as a possible recovery from an interrupted execution (see "Restart and Startup Reconciliation").
+
+==== Restart After Unexpected Termination
+
+Unexpected termination may trigger an automatic restart, according to the configured supervision and recovery policy.
+That policy remains bounded (see "Process Supervision" and "Recovery Escalation").
+
+Following such a restart, the Engine shall attempt to restore autonomous operation, subject to the safety conditions described in "Restart and Startup Reconciliation" and "Fault Isolation and Functional Availability".
+
+Operating-system supervision (see "Process Supervision") and the hardware watchdog (see "Hardware Watchdog") may contribute to restarting the process.
+
+They do not replace application-level recovery.
 
 === Process Supervision
 
@@ -1285,6 +1434,36 @@ incomplete operations reconciled
 normal control begins
 ----
 
+Every startup, whether ordinary or following an unexpected interruption, shall attempt to establish the actual state of the physical installation.
+
+Building on the distinctions made in "State Model", startup reconciliation shall distinguish:
+
+* persisted or last-known state;
+* intended or desired state;
+* currently observed physical state;
+* unknown or unverified state.
+
+Persisted information shall not automatically be treated as current physical truth.
+
+Measurements shall carry sufficient information to determine their validity and freshness.
+
+The Engine shall attempt to reconcile persisted information with current observations before authorizing operations that depend on it.
+
+Uncertainty shall remain explicitly represented.
+It shall not be silently replaced with assumptions.
+
+Recovery may result in:
+
+* restoration of normal operation;
+* degraded operation (see "Degraded Operation");
+* a condition requiring operator intervention.
+
+The architecture does not prescribe one universal response to every failed peripheral.
+The response follows the failure policy of the affected function.
+
+Where the sequence above refers to outputs being established in a known state, that state is determined by the equipment-specific failure policy (see "Equipment-Specific Failure Policy").
+It is not a universal ON or OFF default.
+
 === Clean Shutdown
 
 On normal termination the Engine should have an opportunity to:
@@ -1300,6 +1479,8 @@ On normal termination the Engine should have an opportunity to:
 Shutdown handling shall be bounded.
 
 A hung cleanup operation shall not prevent the machine from shutting down indefinitely.
+
+The defined state of each actuator is determined by its equipment-specific failure policy (see "Equipment-Specific Failure Policy").
 
 === Recovery Escalation
 
@@ -1439,6 +1620,159 @@ Critical sensor unavailable
 Control loop unavailable
     -> defined recovery/failsafe
 ----
+
+=== Fault Isolation and Functional Availability
+
+A peripheral failure shall not unnecessarily interrupt independent Engine functionality.
+
+The following concepts are distinct:
+
+* the Engine lifecycle state (see "Engine Lifecycle");
+* the health of individual components, such as sensors and actuators;
+* the operational availability of individual functions.
+
+The Engine may remain operational while some peripherals or functions are unavailable.
+
+A function may operate only while its necessary operational and safety conditions are satisfied.
+
+If a required dependency is unavailable, the affected function shall follow its defined failure policy.
+Other functions may continue operating when they can do so safely.
+
+The architecture does not define a global "everything ON" or "everything OFF" recovery policy.
+Terms such as "conservative/safe policy" and "failsafe" in "Degraded Operation" refer to the policy of the affected function.
+
+=== Equipment-Specific Failure Policy
+
+[IMPORTANT]
+====
+Fail-safe does not universally mean switching equipment OFF. +
+Inactivity, or declining to issue a further command, is not automatically safer than continued operation.
+====
+
+The appropriate behaviour depends on:
+
+* equipment characteristics;
+* current physical conditions;
+* consequences of action;
+* consequences of inaction;
+* available independent protections;
+* potential harm to animals, plants, people, and equipment.
+
+The following example illustrates the principle.
+It is not a heater-control policy and does not imply any particular equipment.
+
+During freezing conditions, continued heating may be safer than disabling heating.
+However, uncontrolled heating without valid temperature feedback may also be dangerous.
+An independent thermostat or thermal cutoff may allow heating to continue safely even when the software temperature sensor becomes unavailable.
+
+Each meaningful physical function shall eventually have a documented, equipment-specific failure policy.
+
+Such a policy may prescribe:
+
+* an active response;
+* passive behaviour;
+* continued operation under independent safeguards;
+* suspension of the affected function.
+
+The appropriate behaviour shall be established through physical safety analysis.
+It shall not be guessed during implementation.
+
+=== Physical and Software Fail-Safe Cooperation
+
+The Engine and the physical installation shall be designed together.
+
+Physical safety mechanisms shall account for the possibility that software cannot respond at all.
+
+Examples include:
+
+* relay de-energized states;
+* normally open or normally closed contacts;
+* independent thermostats;
+* protective switches and interlocks;
+* appropriate power-loss behaviour;
+* other independent safety mechanisms.
+
+Physical inaction may itself implement a deliberate safe default, provided the physical design establishes that behaviour.
+
+The Engine shall not assume a particular passive equipment state unless it is supported by the documented physical configuration.
+
+Device-specific safety requirements and wiring belong in the Physical Infrastructure chapter (see "Relay System", "Physical Fail-Safe Behaviour", and "Boot-State Behaviour" there).
+
+Software mechanisms that override the normal decision path remain subject to "Local Safety Exceptions".
+
+=== Fault Monitoring, Retry, and Escalation
+
+Fault handling shall include more than a single error-log entry.
+
+The architecture shall support:
+
+* detection of peripheral failures;
+* explicit representation of unresolved faults;
+* appropriate retry strategies;
+* continued monitoring while a fault persists;
+* escalation of persistent or critical conditions;
+* recognition and recording of recovery.
+
+Retries shall be bounded or otherwise controlled.
+Retry delays and timeouts are durations and follow "Time Handling".
+
+A failing peripheral shall not trap the Engine in a blocking retry loop.
+
+Failure supervision shall not prevent independent life-support functions from operating.
+
+Escalation of process-level failure is described in "Recovery Escalation".
+This section concerns faults of peripherals and functions.
+
+=== Operator Notification
+
+Significant operational faults shall be reported promptly to the operator.
+
+The architecture shall support:
+
+* notification of important faults;
+* escalation when necessary;
+* notification of significant recovery events;
+* durable recording of notification-related events;
+* retries when delivery temporarily fails.
+
+Remote notification cannot be assumed to succeed, for example during an Internet outage.
+
+The Engine shall remain autonomous without external communication services.
+
+Where necessary, physical or local alerting mechanisms may provide additional protection.
+
+Notification delivery shall never be a prerequisite for executing essential local safety functions.
+Notification handling shall not block the control loop (compare "Bounded External Ingress").
+
+Notification providers and protocols are not selected by this document.
+
+=== Incremental Implementation of Resilience Requirements
+
+The requirements in the sections "Engine Lifecycle" through "Operator Notification" describe the intended behaviour of the completed Engine.
+
+They do not require every subsystem to be implemented at once.
+
+The project is developed incrementally through small, reviewable tasks.
+
+The initial Engine implementation may be limited to:
+
+* a class representing the Engine;
+* a startup method;
+* a continuous execution loop;
+* controlled exit handling.
+
+Persistence, command execution, recovery, peripheral management, monitoring, and notification may be introduced by later tasks.
+
+Early implementations shall not contradict the documented long-term architecture.
+
+Functionality that has not been implemented shall not be simulated or described as implemented.
+
+The following physical design decisions remain open and are to be resolved in the Physical Infrastructure chapter:
+
+* the equipment-specific failure policy of each controlled function;
+* the relay contact configuration, de-energized state, and required safe state of each channel;
+* the independent physical safeguards available for each function;
+* any physical or local alerting mechanisms.
 
 === API Boundary
 

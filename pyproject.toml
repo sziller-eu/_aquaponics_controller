@@ -18,6 +18,10 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+ape = "aquaponics_controller.cli:main"
+aquaponics-engine = "aquaponics_controller.engine_main:main"
+
 [project.urls]
 Repository = "https://github.com/sziller-eu/_aquaponics_controller"
 

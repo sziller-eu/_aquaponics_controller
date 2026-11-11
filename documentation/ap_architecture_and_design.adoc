@@ -580,6 +580,40 @@ while:
 
 The distinction shall be based on whether the operation causes new physical or state-changing work.
 
+=== Lifecycle-Control Requests
+
+A request asking the Engine to change the state of its own process lifecycle is distinct from an operational command.
+
+An operational command requests a change to physical or logical operating state, for example controlled equipment, an override, an operating parameter, or a schedule.
+Operational commands follow the "Unified Command Execution Architecture" and the "Durable Command Journal".
+
+A lifecycle-control request asks the Engine process itself to change its lifecycle.
+The first lifecycle-control request is the operator request for a controlled Engine shutdown ("STOP").
+
+An authorized operator STOP request is a lifecycle-control request, not a durable operational command.
+Consequently:
+
+* the Engine processes the request;
+* the request is subject to Linux authorization (see "Local Administrative Access") and to Engine validation;
+* the request does not require the durable command journal;
+* the request is not replayable;
+* a previous STOP request shall never be re-executed automatically after a restart;
+* the request is recorded as historical evidence in the lifecycle audit history (see "Engine Lifecycle Audit History"), which is never interpreted as pending work.
+
+This classification creates no general exception to the durable command requirements.
+Every request to change physical or logical operating state remains an operational command.
+
+A lifecycle-control request does not itself operate hardware.
+The shutdown procedure it initiates shall continue to respect all applicable safety and physical command-execution requirements, including the equipment-specific failure policy (see "Equipment-Specific Failure Policy" and "Clean Shutdown").
+
+Operating-system signals such as SIGINT and SIGTERM are not lifecycle-control requests.
+The Engine may respond to them with a best-effort controlled shutdown.
+A handled signal does not establish that the interruption was authorized by an operator.
+That distinction shall remain explicit for process supervision (see "Process Supervision").
+
+Other lifecycle requests, such as a restart request or entering maintenance mode, are not classified here.
+Each shall be classified explicitly when it is introduced.
+
 === API Process Separation
 
 The API shall run as a process separate from the autonomous Engine.
@@ -662,6 +696,8 @@ Possible maintenance rules include:
 * explicit hardware-control lock.
 
 Two independent processes shall not concurrently control the same physical actuator.
+
+A request to stop the Engine is a lifecycle-control request (see "Lifecycle-Control Requests"), not an operational command.
 
 === Local Safety Exceptions
 
@@ -1009,6 +1045,53 @@ Logging and persistence shall remain operationally bounded over long periods (se
 
 Database schemas and logging libraries are not prescribed here.
 
+The lifecycle audit history is a further, separate record (see "Engine Lifecycle Audit History").
+It is not a diagnostic log and not a command history.
+
+=== Engine Lifecycle Audit History
+
+Every Engine execution shall produce a persistent lifecycle audit history.
+
+The history consists of append-only records of lifecycle events.
+At minimum it records:
+
+* the Engine starting;
+* the Engine entering continuous operation;
+* receipt of an operator stop request;
+* initiation of shutdown;
+* completion of shutdown;
+* an Engine failure, when it is detectable.
+
+Each record shall identify:
+
+* an absolute UTC timestamp;
+* a unique Engine execution identifier;
+* the event type;
+* the shutdown or failure reason, where available;
+* the requesting Linux identity, where applicable;
+* relevant event context.
+
+For an operator stop request, the Engine's authoritative receipt time shall be distinguishable from any submission time reported by the client.
+
+The lifecycle audit history:
+
+* survives ordinary Engine process restarts;
+* is historical evidence and shall never be interpreted as pending commands;
+* is never replayed;
+* is distinct from diagnostic logging and from the durable command journal.
+
+Critical lifecycle records shall be written with explicit attention to flushing and storage durability.
+The guarantees actually provided shall be documented.
+
+An inability to persist a lifecycle record shall be reported clearly.
+It shall not indefinitely prevent a necessary shutdown or cleanup.
+
+After abrupt termination, such as `SIGKILL` or power loss, final lifecycle events may be absent.
+Retrospectively identifying an unclean previous execution is a recovery concern (see "Restart and Startup Reconciliation") and is not part of this history's minimum requirements.
+
+The storage format is not prescribed here.
+The initial implementation is described in "Lifecycle Audit Persistence" in the Development and Operations chapter.
+
 === Persistence
 
 The production Engine shall use local authoritative persistence.
@@ -1288,6 +1371,9 @@ A deliberate stop shall not automatically trigger a restart.
 Process supervision shall therefore not treat a deliberate stop as a failure to be recovered.
 
 The Engine remains stopped until it is deliberately started again, for example by an operator or by the next boot-time service startup.
+
+An operator request for a controlled shutdown is a lifecycle-control request (see "Lifecycle-Control Requests").
+It is never replayed after a restart.
 
 During a controlled shutdown, the Engine shall complete or safely interrupt ongoing activities according to their individual requirements, preserve necessary information, and release resources appropriately.
 

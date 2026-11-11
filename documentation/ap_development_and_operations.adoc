@@ -667,6 +667,37 @@ The production application must not accidentally deploy:
 Production composition shall be explicit and inspectable.
 
 
+=== Running the Automated Tests
+
+Install the development dependencies and run the suite from the repository root (see the repository `README.md`):
+
+[source,text]
+----
+$ python -m pip install -e ".[dev]"
+$ python -m pytest
+----
+
+No test requires real aquaponics peripherals, GPIO, Internet connectivity, root privileges or a second Linux account.
+Every test that starts a process bounds its waits and kills the process at teardown.
+Sockets and audit files are created in private temporary directories.
+
+The Engine foundation tests cover:
+
+* `test_engine_lifecycle.py`: Engine lifecycle in one process with a scripted stand-in for the IPC ingress: single startup, repeated cycles, STOP handling, signals, unexpected exceptions, failed cleanup, startup conflicts, audit failures, refusal of unauthorized peers and unsupported operations, pacing and CPU use, interruptible idle waiting, non-replay of earlier STOP records.
+* `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds, `0700`/`0600` permissions, peer credentials, single-instance refusal, stale endpoint replacement, cleanup.
+* `test_lifecycle_audit.py`: record content, appending across executions, flushing, failure to persist, partly written lines.
+* `test_ipc_protocol.py`: encoding, validation, endpoint resolution.
+* `test_engine_processes.py`: the Engine and `ape` as separate operating-system processes: `ape -x`, `SIGINT`, `SIGTERM`, an injected unexpected exception, a conflicting second start, `SIGKILL` followed by a restart, restart without replaying STOP, malformed requests against a live Engine, and every `ape` failure mode with bounded waits.
+
+What the tests cannot show:
+
+* A real permission denial for a different Linux user. The tests check permission modes, the peer credential check and a socket with no permissions for its own user. Verify the cross-user case by hand as described in "Local Administrative IPC (Initial Implementation)".
+* Behaviour after power loss, or the physical durability of `fsync`.
+* Behaviour under `systemd` supervision.
+
+The permission-denial test is skipped when run as `root`, because `root` bypasses file permission checks.
+
+
 === Unified Command-Path Development Rule
 
 Any normal feature capable of changing physical or logical operating state shall integrate with the unified Engine command path.
@@ -1658,6 +1689,248 @@ A possible runtime location is:
 The final path remains an implementation decision.
 
 The IPC endpoint shall not be exposed more broadly than required.
+
+=== Running the Engine in Development
+
+The current Engine is a development foundation, not a production controller.
+
+It provides a continuously repeating operating cycle, a local administrative IPC interface, a lifecycle audit history, and controlled shutdown.
+It does not provide:
+
+* hardware, GPIO or relay control;
+* sensors, scheduling or environmental control;
+* the durable operational command journal or any operational state database;
+* state reconciliation after a restart;
+* a REST API;
+* `systemd` installation, automatic restart or watchdog integration.
+
+It must not be composed with real hardware adapters in this form.
+
+Install the package in a virtual environment (see the repository `README.md`).
+The commands `aquaponics-engine` and `ape` are installed with the package;
+`python -m aquaponics_controller.engine_main` and `python -m aquaponics_controller.cli` are equivalent.
+
+Starting the Engine in one terminal:
+
+[source,text]
+----
+$ aquaponics-engine
+----
+
+Requesting a controlled shutdown from a second terminal:
+
+[source,text]
+----
+$ ape -x
+Engine shutdown initiated. This does not confirm that the Engine process has exited.
+----
+
+The Engine options are:
+
+[cols="2,5",options="header"]
+|===
+|Option |Meaning
+
+|`--socket PATH`
+|Administrative IPC endpoint. See "Local Administrative IPC (Initial Implementation)".
+
+|`--audit-file PATH`
+|Lifecycle audit file. See "Lifecycle Audit Persistence".
+
+|`--cycle-interval SECONDS`
+|Operating cycle interval, between 0.01 and 60 seconds. The default is 1.0.
+
+|`--log-level LEVEL`
+|`DEBUG`, `INFO` (default), `WARNING` or `ERROR`. Diagnostic logs go to standard error.
+|===
+
+The Engine services administrative requests once per operating cycle.
+A shutdown request is therefore acknowledged within about one cycle interval.
+
+Ways in which an Engine execution ends:
+
+[cols="2,3,1",options="header"]
+|===
+|Cause |Behaviour |Exit status
+
+|Operator request (`ape -x`)
+|Lifecycle-control request (see "Lifecycle-Control Requests"). Controlled shutdown, cleanup.
+|0
+
+|`SIGINT` (Ctrl+C) or `SIGTERM`
+|Best-effort controlled shutdown, cleanup. Recorded as an external interruption by that signal.
+A handled signal does not establish that an operator authorized the interruption.
+It is not interpreted as an administrative request.
+|0
+
+|Unexpected Python exception
+|Logged with its traceback, cleanup attempted, never suppressed.
+|1
+
+|Command-line or configuration error
+|Reported on standard error. The Engine does not start.
+|2
+
+|Another Engine already owns the endpoint
+|Reported. The running Engine is not disturbed.
+|3
+
+|Shutdown carried out, but cleanup reported an error
+|Logged.
+|4
+
+|`SIGKILL`, power loss
+|No cleanup and no final audit events are possible. Recovery after such an interruption is outside this implementation.
+|(none)
+|===
+
+Exit status 0 after a handled signal reports that the shutdown completed, not who requested it.
+Future service supervision shall not treat it as proof of operator authorization.
+
+The `ape` client reports through its exit status:
+
+[cols="1,5",options="header"]
+|===
+|Status |Meaning
+
+|0 |The Engine confirmed that shutdown was initiated. This does not confirm that the process has exited.
+|1 |The Engine refused the request (for example an unauthorized user or an unsupported operation).
+|2 |Usage or configuration error.
+|3 |The Engine is not reachable: the endpoint does not exist, or nothing is listening.
+|4 |Permission denied by the operating system.
+|5 |No answer within the timeout (`--timeout`, default 5 seconds).
+|6 |The connection failed or the answer was not understood.
+|===
+
+`ape` never sends a process signal and never retries.
+
+=== Local Administrative IPC (Initial Implementation)
+
+This section documents the first concrete local IPC mechanism, as required by "Local IPC Deployment".
+It is an initial implementation for the administrative interface only.
+The wire protocol is not a general command framework.
+
+Transport:: A Unix domain socket (`AF_UNIX`, stream), using only the Python standard library.
+No network, Internet or external IPC dependency is involved.
+
+Endpoint path:: Configurable. The first available of: `--socket PATH`, the environment variable `AQUAPONICS_ENGINE_SOCKET`, `$XDG_RUNTIME_DIR/aquaponics/engine.sock`.
+If none is available, the Engine and `ape` report a configuration error.
+Unix socket paths are limited to about 107 bytes.
+The production location (for example under `/run/aquaponics/`) is not decided here.
+
+[cols="1,4",options="header"]
+|===
+|Deployment item |Initial implementation
+
+|Path
+|As above. Configurable.
+
+|Owner
+|The user running the Engine.
+
+|Group
+|The primary group of the Engine's user. No group access is granted by default.
+
+|Permissions
+|The endpoint's directory is created with mode `0700` and the socket with mode `0600`, independent of the process umask.
+An existing directory must be owned by the Engine's user.
+
+|Creation
+|By the Engine at startup.
+
+|Cleanup
+|By the Engine during shutdown. The socket is removed only if it is still the one this Engine created.
+A socket left behind by `SIGKILL` or a crash is stale and is replaced at the next start.
+Something at the endpoint path that is not a socket is never removed.
+
+|Restart behaviour
+|A restarted Engine acquires the endpoint without manual intervention.
+|===
+
+Single instance:: The Engine holds an exclusive `flock` on `<endpoint>.lock` for as long as it runs.
+A second Engine on the same endpoint fails to start (exit status 3) without disturbing the first.
+The kernel releases the lock when the process ends, including after a crash.
+The lock file is never deleted, because deleting lock files races with a starting Engine.
+
+Access control::
+* Linux filesystem permissions decide who can connect. By default only the Engine's user (and root) can.
+* The Engine reads the kernel-reported credentials of the connecting process (`SO_PEERCRED`) and, as Engine-side enforcement, accepts administrative operations only from users in its configured administrative set. The default set is the Engine's own user and root. A peer whose credentials cannot be read is refused.
+* The credentials (uid, gid, pid) are recorded in the lifecycle audit history. A pid can be reused and is informational.
+* No Aquaponics-specific login or password exists.
+* Granting access to a dedicated administrative group is a deployment decision for later work. It requires changing both the directory/socket permissions and the Engine's administrative user set.
+* The future REST API is a separate Linux service identity (see "Authentication and Authorization"). It shall not receive access to this administrative interface merely because the Engine's interface exists. A separate, differently permissioned endpoint is the expected approach.
+
+Request format:: One request and one response per connection, each a single newline-terminated UTF-8 JSON object of at most 4096 bytes.
+For example `{"v": 1, "op": "stop", "submitted_at": "2026-11-11T12:00:00+00:00"}`.
+The response is `{"v": 1, "ok": true, "status": "shutdown_initiated"}` or an error object with an error code.
+The only supported operation is `stop`. Unknown versions and operations, malformed JSON and oversized requests are refused with an error response.
+
+Bounds:: Per operating cycle the Engine accepts at most 8 connections, spends at most 0.2 s waiting for each request line, and at most 0.5 s in total.
+Clients beyond the listen backlog fail to connect rather than blocking the Engine.
+A stalled or malicious local client can therefore delay one cycle by a bounded time, never indefinitely.
+`ape` bounds the entire exchange with its timeout.
+
+Acknowledgement:: `shutdown_initiated` means the Engine has decided to shut down.
+It does not mean the Engine process has exited.
+A repeated request during shutdown receives `shutdown_already_initiated`.
+The word "accepted" is deliberately not used: it is reserved for durable acceptance of operational commands (see "Engine Ingress").
+
+Manual verification of cross-user denial:: Automated tests cannot assume a second Linux account.
+To verify it by hand, with the Engine running as user A and a second account B:
+
+[source,text]
+----
+$ sudo -u B ape -x --socket /path/to/engine.sock
+ape: permission denied for /path/to/engine.sock        (exit status 4)
+----
+
+The Engine must keep running, and its lifecycle audit history must contain no `STOP_REQUEST_RECEIVED` for the attempt.
+
+=== Lifecycle Audit Persistence
+
+Every Engine execution appends records to a lifecycle audit file, as required by "Engine Lifecycle Audit History".
+
+File location:: The first available of: `--audit-file PATH`, the environment variable `AQUAPONICS_LIFECYCLE_AUDIT_FILE`, `$XDG_STATE_HOME/aquaponics/lifecycle_audit.jsonl` (default `~/.local/state/aquaponics/lifecycle_audit.jsonl`).
+The directory is created with mode `0700` and the file with mode `0600`.
+The production location is not decided here.
+
+Format:: JSON Lines: one JSON object per line, appended, never rewritten.
+Records contain: `format`, `timestamp_utc` (absolute UTC), `execution_id` (unique per Engine execution), `sequence` (within the execution), `event`, `reason`, `requester` (uid, gid, pid, where applicable) and `context`.
+
+Events:
+
+[cols="2,5",options="header"]
+|===
+|Event |Meaning
+
+|`ENGINE_STARTING` |Startup began. Context includes the Engine pid, endpoint and audit file.
+|`ENGINE_RUNNING` |Startup completed. The Engine enters continuous operation.
+|`STOP_REQUEST_RECEIVED` |An authorized operator STOP request was received through the administrative IPC. The record's timestamp and `engine_receipt_time_utc` are the Engine's authoritative receipt time. `client_reported_submission_time_utc` is what the client claimed, and is informational.
+|`SHUTDOWN_INITIATED` |Shutdown began. `reason` is `OPERATOR_STOP`, `SIGNAL` (context names the signal) or `FAILURE`.
+|`SHUTDOWN_COMPLETED` |Cleanup finished. Context reports whether cleanup succeeded, the exit status and the number of cycles.
+|`ENGINE_FAILURE` |A failure was detected. `reason` is the exception type; context names the phase (`startup` or `operation`).
+|===
+
+Refused requests (unauthorized peers, malformed or unsupported requests) are logged diagnostically and are not lifecycle audit events.
+
+Example sequence for an operator shutdown: `ENGINE_STARTING`, `ENGINE_RUNNING`, `STOP_REQUEST_RECEIVED`, `SHUTDOWN_INITIATED`, `SHUTDOWN_COMPLETED`.
+
+Reading:: The file is plain text, for example `jq . lifecycle_audit.jsonl`.
+`aquaponics_controller.lifecycle_audit.read_lifecycle_records` reads it for tests and inspection and skips a partly written final line.
+Nothing in the Engine reads the file at startup or at any other time to decide what to do.
+Records are evidence. A `STOP_REQUEST_RECEIVED` or `SHUTDOWN_INITIATED` record from an earlier execution has no effect on a later one.
+
+Durability and its limits::
+* Each record is written with one `write` to a file opened in append mode and is followed by `fsync`. The directory is `fsync`-ed when the file is first created.
+* A record is therefore on stable storage when `record` returns, as far as the operating system and the storage device honour `fsync`. Devices or filesystems that acknowledge writes they have not made durable can still lose records on power loss.
+* `fsync` has no timeout. A failing disk can block the Engine in `fsync`; this implementation does not bound that, because it would require threads or a separate process.
+* After `SIGKILL`, a crash or power loss the final events (`SHUTDOWN_INITIATED`, `SHUTDOWN_COMPLETED`) are absent, and the last line may be incomplete. This implementation does not detect or mark an unclean previous execution; that belongs to later recovery development.
+* A second Engine refused because the endpoint is in use still records its own `ENGINE_STARTING`, `ENGINE_FAILURE`, `SHUTDOWN_INITIATED` and `SHUTDOWN_COMPLETED` under its own execution identifier. Its records are appended as whole lines.
+* There is no rotation, retention or size limit. Bounded retention is a later concern (see "Disk Protection").
+* If the file cannot be opened at startup, the Engine does not start (exit status 1), because an execution without an audit history is not permitted.
+* If a record cannot be written later, an `ERROR` is logged ("LIFECYCLE AUDIT RECORD NOT PERSISTED"), `ape` prints a warning where the request was affected, and shutdown and cleanup continue.
+
+Lifecycle audit history is not a diagnostic log (see "Logging"), not the durable command journal, and not a source of pending work.
 
 
 === Health Monitoring

@@ -104,3 +104,4 @@ def deserialize_message(raw_bytes: bytes) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object, got {type(data).__name__}")
     return data
+

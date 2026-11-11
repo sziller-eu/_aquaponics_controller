@@ -339,3 +339,4 @@ class AquaponicsEngine:
     def _flush_persistence(self) -> None:
         """Flush unwritten state to persistent storage."""
         logger.debug("Persistence flushed")
+

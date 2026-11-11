@@ -383,3 +383,4 @@ class EngineIngress:
                 logger.debug("Error unlinking socket file %s: %s", self._socket_path, exc)
 
         logger.info("Engine ingress closed")
+

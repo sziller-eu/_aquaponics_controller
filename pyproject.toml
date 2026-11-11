@@ -21,3 +21,4 @@ dependencies = []
 [project.scripts]
 ape = "aquaponics_controller.cli.main:main"
 aquaponics-engine = "aquaponics_controller.engine.main:main"
+

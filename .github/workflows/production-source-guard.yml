@@ -1,0 +1,89 @@
+# Production source guard.
+#
+# Policy: a pull request may be merged into `production` only when it comes from the
+# `staging` branch of THIS repository. Every other source (another branch of this
+# repository, any fork, a fork branch that is also named `staging`) is rejected.
+#
+# This workflow is independent of the Aquaponics Engine and of any Python environment.
+# See "Production Pull Request Source Policy" in documentation/ap_contributing_and_governance.adoc.
+#
+# Security design (read before changing anything here):
+#
+# - Trigger is `pull_request_target`, so GitHub runs the workflow file from the repository's
+#   DEFAULT branch (`production`), never from the pull request. A pull request that edits or
+#   deletes this file therefore cannot change how it is judged. A plain `pull_request`
+#   trigger would run the pull request's own copy and could be bypassed.
+# - Nothing from the pull request is checked out, built or executed: there is no
+#   `actions/checkout` step and no third-party action. The job reads only event metadata.
+# - No secrets are used, and the token has no permissions (`permissions: {}`).
+# - Pull request fields (branch names, repository names) are untrusted text. They are passed
+#   to the script through environment variables and are only ever compared as quoted values;
+#   they are never interpolated into the script text.
+# - The job must never be skipped: a skipped job satisfies a required status check. There is
+#   no job-level `if:`, and the only path to success is the explicit comparison below.
+# - The job name `production-source-guard` is the status check to require in the `production` ruleset.
+#
+# GitHub enforcement exists only after the owner has completed the configuration described in the
+# documentation (merge this workflow into `production`, allow `pull_request_target` for it in the
+# Actions policies, and require the check in the `production` ruleset).
+
+name: Production Source Guard
+
+on:
+  pull_request_target:
+    branches:
+      - production
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited # also fires when the base branch of an open pull request is changed
+
+permissions: {}
+
+jobs:
+  production-source-guard:
+    name: production-source-guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require a pull request from this repository's staging branch
+        env:
+          EXPECTED_REPOSITORY: sziller-eu/_aquaponics_controller
+          EXPECTED_BASE_BRANCH: production
+          EXPECTED_HEAD_BRANCH: staging
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -u
+
+          violations=0
+
+          # Fail closed: an empty value (for example a deleted fork) never equals the expected one.
+          # Untrusted values are printed with a fixed prefix and %q, so they can never form a
+          # workflow command (those must start a line with "::").
+          require_equal() {
+            description="$1"
+            actual="$2"
+            expected="$3"
+            if [ "$actual" = "$expected" ]; then
+              printf 'ok:        %s\n' "$description"
+            else
+              violations=$((violations + 1))
+              printf 'violation: %s (found: %q, required: %q)\n' "$description" "$actual" "$expected"
+            fi
+          }
+
+          require_equal 'base repository' "$BASE_REPOSITORY" "$EXPECTED_REPOSITORY"
+          require_equal 'base branch' "$BASE_BRANCH" "$EXPECTED_BASE_BRANCH"
+          require_equal 'head repository' "$HEAD_REPOSITORY" "$EXPECTED_REPOSITORY"
+          require_equal 'head branch' "$HEAD_BRANCH" "$EXPECTED_HEAD_BRANCH"
+
+          if [ "$violations" -ne 0 ]; then
+            echo '::error title=Production source policy::Pull requests into production must come from the staging branch of this repository.'
+            exit 1
+          fi
+
+          echo 'Pull request source accepted: staging of this repository into production.'

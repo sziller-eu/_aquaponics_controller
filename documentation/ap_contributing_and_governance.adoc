@@ -455,6 +455,50 @@ Review should consider:
 * offline operation;
 * deployment impact.
 
+=== Production Pull Request Source Policy
+
+A pull request may be merged into `production` only when it originates from the `staging` branch of this repository (`sziller-eu/_aquaponics_controller`).
+Every other source is rejected: another branch of this repository, any fork, and a fork branch that is also named `staging`.
+This is a repository governance rule.
+It is independent of the Engine, of its Python environment and of any contributor's intent.
+
+The rule is implemented by the workflow `.github/workflows/production-source-guard.yml`, which provides the status check `production-source-guard`.
+The workflow compares four values supplied by GitHub: the base repository, the base branch, the head repository and the head branch.
+It fails unless all four match the policy, and it fails closed when a value is missing, for example the head repository of a deleted fork.
+
+The workflow uses the `pull_request_target` trigger deliberately.
+GitHub runs such a workflow from the default branch (`production`), not from the pull request.
+A pull request that edits or deletes the workflow therefore cannot change how it is judged.
+A plain `pull_request` trigger would execute the pull request's own copy of the file and could be bypassed.
+The workflow is written so that this trigger remains safe:
+
+* it checks out nothing and executes nothing from the pull request;
+* it uses no secrets, no third-party actions and a token without permissions;
+* pull request data is passed through environment variables and only compared, never interpolated into script text;
+* the job is never skipped, because a skipped job would satisfy a required status check.
+
+==== Enforcement Requires Owner Configuration
+
+The workflow file alone enforces nothing.
+Enforcement exists only after the repository owner has completed all of the following, and it should be treated as established only after it has been demonstrated on a real pull request:
+
+. The workflow is merged into `production`, the default branch.
+GitHub reads the workflow of a `pull_request_target` event from there, so it cannot protect `production` before that merge.
+. Actions are enabled for the repository, and an applicable Actions event policy allows the `pull_request_target` event for this workflow file.
+From 2 December 2026 GitHub blocks `pull_request_target` by default in public repositories unless such a policy allows it.
+If the event stays blocked, the workflow never runs and the required check never reports, so every pull request into `production` stays unmergeable.
+That failure is safe but blocks legitimate promotion.
+. The `production` ruleset requires the status check `production-source-guard`, provided by GitHub Actions, and has no bypass actors, so that repository administrators are bound as well.
+The check can be selected in the ruleset only after it has run once, or its name can be entered manually.
+
+==== Maintenance
+
+* Changes to the workflow are governance changes and require maintainer review.
+* The expected repository name is written into the workflow.
+It must be updated if the repository is renamed or moved.
+* The policy governs the source of pull requests.
+It does not replace review, the rulesets of the repository or the branching model: `production` is promoted from `staging` through pull requests.
+
 === Licensing
 
 The repository shall contain an explicit open-source license.

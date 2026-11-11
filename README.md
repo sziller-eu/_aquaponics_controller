@@ -13,6 +13,10 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
+To run the current Engine foundation locally and to stop it from a second terminal (`aquaponics-engine`, `ape -x`), see
+"Running the Engine in Development" in the Development and Operations documentation. It is a development foundation
+without hardware control, not a production controller.
+
 The authoritative architecture, development and operations documentation is in `documentation/`
 (AsciiDoc sources `ap_*.adoc`, assembled by `documentation/_aquaponics@sziller.eu.adoc`).
 

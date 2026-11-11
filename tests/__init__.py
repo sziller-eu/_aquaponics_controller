@@ -1,2 +1,0 @@
-"""Aquaponics Controller test suite."""
-

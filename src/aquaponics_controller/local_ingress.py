@@ -3,7 +3,10 @@
 The Engine services this interface; it never drives the Engine. Every call to
 ``service_pending_requests`` is bounded in the number of connections, in the time
 spent per connection, and in total time, so a stalled or hostile local client
-cannot hold the Engine for an unbounded time.
+cannot hold the Engine for an unbounded time. ``readiness_source`` lets the Engine
+learn, while it idles between operating cycles, that a client is waiting; the
+Engine then calls ``service_pending_requests`` itself. The ingress starts no thread
+and runs nothing of its own.
 
 Access control is Linux filesystem permissions: the endpoint's directory and the
 socket are owner-only (0700 / 0600) by default. The peer credentials reported by
@@ -46,6 +49,11 @@ logger = logging.getLogger(__name__)
 RequestHandler = Callable[[AdministrativeRequest, PeerIdentity | None], AdministrativeResponse]
 
 
+def _describe_id(correlation_id: str | None) -> str:
+    """A correlation identifier is client-supplied text: quote it (repr) so it cannot forge log lines."""
+    return repr(correlation_id) if correlation_id is not None else "-"
+
+
 class IngressUnavailableError(Exception):
     """The endpoint could not be established."""
 
@@ -75,6 +83,14 @@ class LocalAdministrativeIngress:
     @property
     def endpoint(self) -> Path:
         return self._endpoint
+
+    @property
+    def readiness_source(self) -> socket.socket | None:
+        """The listening socket, readable whenever a client is waiting to be served. None unless open.
+
+        For use with a selector only: the caller must not accept, read from or close it.
+        """
+        return self._listener
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -131,14 +147,23 @@ class LocalAdministrativeIngress:
 
     # ------------------------------------------------------------------ servicing
 
-    def service_pending_requests(self, handler: RequestHandler) -> int:
-        """Handle the connections already waiting, within the configured bounds. Return how many."""
+    def service_pending_requests(self, handler: RequestHandler, time_limit_seconds: float | None = None) -> int:
+        """Handle the connections already waiting, within the configured bounds. Return how many.
+
+        ``time_limit_seconds`` can only tighten the configured time budget. The Engine uses it
+        while idling, so that servicing never pushes the next operating cycle further back
+        than one connection's own (bounded) read and write deadlines. At least one waiting
+        connection is handled whenever the limit is positive.
+        """
         if self._listener is None:
             return 0
+        budget = self._limits.cycle_budget_seconds
+        if time_limit_seconds is not None:
+            budget = min(budget, time_limit_seconds)
         started = self._clock.monotonic()
         handled = 0
         while handled < self._limits.max_connections_per_cycle:
-            if self._clock.monotonic() - started >= self._limits.cycle_budget_seconds:
+            if self._clock.monotonic() - started >= budget:
                 logger.warning("ingress time budget used up; remaining connections wait for the next cycle")
                 break
             try:
@@ -159,14 +184,30 @@ class LocalAdministrativeIngress:
             line = self._read_request_line(connection)
             request = decode_request(line)
         except ProtocolError as exc:
-            logger.warning("rejected IPC request from %s: %s", peer, exc.message)
-            self._send(connection, AdministrativeResponse(False, error_code=exc.error_code, message=exc.message))
+            logger.warning(
+                "rejected IPC request %s from %s: %s", _describe_id(exc.correlation_id), peer, exc.message
+            )
+            self._send(
+                connection,
+                AdministrativeResponse(
+                    False, error_code=exc.error_code, message=exc.message, correlation_id=exc.correlation_id
+                ),
+            )
             return
         except ConnectionError as exc:
             logger.warning("IPC client %s disconnected before completing its request: %s", peer, exc)
             return
+        # Diagnostic trace: receipt, (Engine processing is traced by the handler), answer. Only the
+        # operation name and the correlation identifier are named, never the request's arguments.
+        logger.info("IPC request received: op=%r id=%s peer=%s", request.operation, _describe_id(request.correlation_id), peer)
         response = handler(request, peer)
-        self._send(connection, response)
+        delivered = self._send(connection, response)
+        logger.info(
+            "IPC request answered: id=%s ok=%s %s",
+            _describe_id(request.correlation_id),
+            response.ok,
+            "delivered" if delivered else "NOT delivered",
+        )
 
     def _read_request_line(self, connection: socket.socket) -> bytes:
         deadline = self._clock.monotonic() + self._limits.read_deadline_seconds
@@ -189,12 +230,15 @@ class LocalAdministrativeIngress:
                 raise ProtocolError(ERROR_REQUEST_TOO_LARGE, f"request exceeds {MAX_MESSAGE_BYTES} bytes")
         return received.split(b"\n", 1)[0]
 
-    def _send(self, connection: socket.socket, response: AdministrativeResponse) -> None:
+    def _send(self, connection: socket.socket, response: AdministrativeResponse) -> bool:
+        """Send one response within the write deadline. Return whether it was delivered."""
         try:
             connection.settimeout(self._limits.write_deadline_seconds)
             connection.sendall(encode_response(response))
         except OSError as exc:
             logger.warning("could not deliver IPC response: %s", exc)
+            return False
+        return True
 
     @staticmethod
     def _read_peer_identity(connection: socket.socket) -> PeerIdentity | None:

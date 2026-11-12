@@ -683,11 +683,14 @@ Sockets and audit files are created in private temporary directories.
 
 The Engine foundation tests cover:
 
-* `test_engine_lifecycle.py`: Engine lifecycle in one process with a scripted stand-in for the IPC ingress: single startup, repeated cycles, STOP handling, signals, unexpected exceptions, failed cleanup, startup conflicts, audit failures, refusal of unauthorized peers and unsupported operations, pacing and CPU use, interruptible idle waiting, non-replay of earlier STOP records.
-* `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds, `0700`/`0600` permissions, peer credentials, single-instance refusal, stale endpoint replacement, cleanup.
+* `test_engine_lifecycle.py`: Engine lifecycle in one process with a scripted stand-in for the IPC ingress: single startup, repeated cycles, STOP handling, signals, unexpected exceptions, failed cleanup, startup conflicts, audit failures, refusal of unauthorized peers and unsupported operations, pacing and CPU use, interruptible idle waiting, non-replay of earlier STOP records. It also covers the request dispatcher (`ping` and `echo` results, argument validation including Unicode and the 256-character boundary, authorization of queries, request classes, no audit or persistence of queries, diagnostic traces) and the responsive idle wait (requests serviced while idling without starting a cycle, the unchanged cycle deadline under request bursts, readiness without progress, a wake-up arriving at any moment, failure while servicing, release of the wake-up resources).
+* `test_idle_wait.py`: the readiness-driven idle wait with real sockets: timeout, wake-up before and during a wait, consumption of wake-ups, readiness of the ingress socket, ignoring it on request, release of descriptors.
+* `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds (including the idle-wait time limit), `0700`/`0600` permissions, peer credentials, single-instance refusal, stale endpoint replacement, cleanup, the readiness source, correlation identifiers, and traces that never contain request arguments.
 * `test_lifecycle_audit.py`: record content, appending across executions, flushing, failure to persist, partly written lines.
-* `test_ipc_protocol.py`: encoding, validation, endpoint resolution.
+* `test_ipc_protocol.py`: encoding, validation, endpoint resolution, the optional correlation identifier and arguments, and the size limit for the largest valid messages.
+* `test_cli.py`: the `ape` client against canned servers: what it sends, how it displays `ping`, `echo` and STOP answers, its exit status for every refusal and unintelligible answer, correlation checking, bounded waits, usage errors.
 * `test_engine_processes.py`: the Engine and `ape` as separate operating-system processes: `ape -x`, `SIGINT`, `SIGTERM`, an injected unexpected exception, a conflicting second start, `SIGKILL` followed by a restart, restart without replaying STOP, malformed requests against a live Engine, and every `ape` failure mode with bounded waits.
+* `test_request_processing.py`: the Engine and clients as separate processes: `ape --ping` and `ape --echo`, invalid requests, queries that leave no trace on disk or in the audit history, a 30-second cycle interval that does not delay answers or STOP, no extra operating cycles from requests, idle CPU use, descriptor stability, cycles that keep their pace under request streams and stalled clients.
 
 What the tests cannot show:
 
@@ -1717,6 +1720,26 @@ Starting the Engine in one terminal:
 $ aquaponics-engine
 ----
 
+Checking from a second terminal that the Engine is running and processing requests:
+
+[source,text]
+----
+$ ape --ping
+pong: the Engine is reachable (execution 6f1c...e2, pid 12345)
+operating cycles completed: 42
+Engine time: 2026-11-12T06:21:26.655626Z
+
+$ ape --echo "hello Engine"
+hello Engine
+----
+
+`ape --ping` and `ape --echo TEXT` are stateless diagnostic queries (see "Request Classes").
+The answer is produced by the running Engine, not by `ape`: the execution identifier, process identifier, cycle count and time in a `ping` answer are the Engine's own.
+`TEXT` is limited to 256 characters.
+The limit counts Unicode characters, not bytes, and is enforced by the Engine.
+A text that starts with `-` must be written as `--echo=-text`.
+Neither query changes anything, and neither is recorded in the lifecycle audit history.
+
 Requesting a controlled shutdown from a second terminal:
 
 [source,text]
@@ -1724,6 +1747,8 @@ Requesting a controlled shutdown from a second terminal:
 $ ape -x
 Engine shutdown initiated. This does not confirm that the Engine process has exited.
 ----
+
+Exactly one of `-x`, `--ping` and `--echo` is chosen per invocation.
 
 The Engine options are:
 
@@ -1744,8 +1769,15 @@ The Engine options are:
 |`DEBUG`, `INFO` (default), `WARNING` or `ERROR`. Diagnostic logs go to standard error.
 |===
 
-The Engine services administrative requests once per operating cycle.
-A shutdown request is therefore acknowledged within about one cycle interval.
+The Engine services administrative requests during each operating cycle and also while it idles between cycles.
+A request, and a shutdown request in particular, is therefore answered promptly even with a long cycle interval, and does not start an additional operating cycle.
+The remaining delay is the duration of an operating cycle already in progress, plus the bounded time (see "Bounds") spent servicing requests.
+The `ape` default timeout of five seconds is unchanged.
+
+Idle servicing uses one thread and one loop.
+The idle wait ends when the cycle deadline is reached, when the IPC socket reports a waiting client, or when a stop is requested (including by `SIGINT` and `SIGTERM`).
+It costs no CPU while nothing happens.
+If the socket reports a waiting client but no request can be serviced, for example because the process has run out of file descriptors, the Engine ignores the socket for 0.25 seconds before listening again, so that it cannot spin.
 
 Ways in which an Engine execution ends:
 
@@ -1793,11 +1825,11 @@ The `ape` client reports through its exit status:
 |===
 |Status |Meaning
 
-|0 |The Engine confirmed that shutdown was initiated. This does not confirm that the process has exited.
-|1 |The Engine refused the request (for example an unauthorized user or an unsupported operation).
+|0 |The Engine answered successfully. For `-x` this confirms that shutdown was initiated, not that the process has exited.
+|1 |The Engine refused the request (for example invalid arguments or an unsupported operation).
 |2 |Usage or configuration error.
 |3 |The Engine is not reachable: the endpoint does not exist, or nothing is listening.
-|4 |Permission denied by the operating system.
+|4 |Permission denied: by the operating system, or by the Engine (`peer_not_authorized`: the connecting Linux user is not authorized for administration).
 |5 |No answer within the timeout (`--timeout`, default 5 seconds).
 |6 |The connection failed or the answer was not understood.
 |===
@@ -1861,16 +1893,61 @@ Access control::
 * The future REST API is a separate Linux service identity (see "Authentication and Authorization"). It shall not receive access to this administrative interface merely because the Engine's interface exists. A separate, differently permissioned endpoint is the expected approach.
 
 Request format:: One request and one response per connection, each a single newline-terminated UTF-8 JSON object of at most 4096 bytes.
-For example `{"v": 1, "op": "stop", "submitted_at": "2026-11-11T12:00:00+00:00"}`.
-The response is `{"v": 1, "ok": true, "status": "shutdown_initiated"}` or an error object with an error code.
-The only supported operation is `stop`. Unknown versions and operations, malformed JSON and oversized requests are refused with an error response.
+The protocol version remains 1. The fields below were added without changing the existing ones.
+For example `{"v": 1, "op": "echo", "submitted_at": "2026-11-12T06:00:00+00:00", "id": "7f3a...", "args": {"text": "hello"}}`.
 
-Bounds:: Per operating cycle the Engine accepts at most 8 connections, spends at most 0.2 s waiting for each request line, and at most 0.5 s in total.
+[cols="1,4",options="header"]
+|===
+|Field |Meaning
+
+|`v` |Protocol version. Must be 1.
+|`op` |Operation name: `ping`, `echo` or `stop`.
+|`submitted_at` |Optional. A timezone-aware time reported by the client. Informational only.
+|`id` |Optional correlation identifier, a string of 1 to 64 characters. The answer repeats it. It is not a durable command identifier and not an idempotency key. `ape` generates a new one for every request and rejects an answer that does not repeat it.
+|`args` |Optional argument object. Its content is validated by the Engine for each operation.
+|===
+
+Operations:: All three need the authorization described under "Access control".
+* `ping`: a query. No arguments. The answer's `result` is `{"reply": "pong", "execution_id": ..., "engine_pid": ..., "cycles_completed": ..., "engine_time_utc": ...}`. `cycles_completed` counts completed operating cycles; a cycle in progress is not counted.
+* `echo`: a query. Exactly one argument, `text`, a string of at most 256 characters (Unicode characters, not bytes) that can be encoded as UTF-8 (an unpaired surrogate is refused). The answer's `result` is `{"text": ...}`. The largest valid request and answer fit in the 4096-byte limit even when every character needs a 12-byte JSON escape.
+* `stop`: a lifecycle-control request. No arguments.
+
+Responses:: `{"v": 1, "ok": true, "id": "...", "result": {...}}` for a query, `{"v": 1, "ok": true, "status": "shutdown_initiated", "id": "..."}` for `stop`, and `{"v": 1, "ok": false, "error": "<code>", "message": "<text>", "id": "..."}` for a refusal.
+The `id` is present when the request carried a valid one.
+A refusal never repeats the rejected text.
+
+Error codes::
+[cols="2,4",options="header"]
+|===
+|Code |Meaning
+
+|`malformed_request` |Not valid UTF-8 JSON, not a JSON object, or a field has the wrong type.
+|`unsupported_protocol_version` |`v` is not 1.
+|`request_too_large` |More than 4096 bytes.
+|`request_timeout` |The request line did not arrive in time.
+|`invalid_correlation_id` |`id` is not a string of 1 to 64 characters.
+|`invalid_arguments` |`args` is not an object, or its content is not valid for the operation (missing, unexpected or wrongly typed argument, text longer than 256 characters).
+|`unsupported_operation` |`op` is not one of the supported operations.
+|`peer_not_authorized` |The connecting Linux user is not authorized for administration.
+|===
+
+None of these stops the Engine. `ape` reports `peer_not_authorized` with exit status 4 and every other refusal with exit status 1.
+
+Bounds:: Per call the Engine accepts at most 8 connections, spends at most 0.2 s waiting for each request line, and at most 0.5 s in total.
+A call is made in every operating cycle, and again whenever the IPC socket reports a waiting client while the Engine idles.
+While idling, the time spent is also limited to the time left before the next cycle is due, and at least one waiting connection is handled per call.
+A stalled or malicious local client can therefore delay a cycle by a bounded time (about one connection's read and write deadlines, at most 0.4 s), never indefinitely.
 Clients beyond the listen backlog fail to connect rather than blocking the Engine.
-A stalled or malicious local client can therefore delay one cycle by a bounded time, never indefinitely.
 `ape` bounds the entire exchange with its timeout.
 
+Diagnostic traces:: For every request that is read, the Engine logs (at `INFO`) that it was received, that it was processed, and that it was answered, naming the operation, the correlation identifier and the outcome.
+The identifier is client-supplied text and is logged quoted.
+The arguments, in particular the `echo` text, are never logged.
+Refused requests are traced the same way, with the error code.
+This is a minimal trace, not the general logging architecture.
+
 Acknowledgement:: `shutdown_initiated` means the Engine has decided to shut down.
+A `ping` or `echo` answer reports a result; it does not mean anything was accepted for later execution.
 It does not mean the Engine process has exited.
 A repeated request during shutdown receives `shutdown_already_initiated`.
 The word "accepted" is deliberately not used: it is reserved for durable acceptance of operational commands (see "Engine Ingress").
@@ -1911,7 +1988,7 @@ Events:
 |`ENGINE_FAILURE` |A failure was detected. `reason` is the exception type; context names the phase (`startup` or `operation`).
 |===
 
-Refused requests (unauthorized peers, malformed or unsupported requests) are logged diagnostically and are not lifecycle audit events.
+Refused requests (unauthorized peers, malformed or unsupported requests) and the diagnostic queries `ping` and `echo` are logged diagnostically and are not lifecycle audit events.
 
 Example sequence for an operator shutdown: `ENGINE_STARTING`, `ENGINE_RUNNING`, `STOP_REQUEST_RECEIVED`, `SHUTDOWN_INITIATED`, `SHUTDOWN_COMPLETED`.
 

@@ -443,6 +443,11 @@ External communication is serviced by the Engine. +
 External communication shall never become the clock that drives the Engine.
 ====
 
+The Engine may also service pending external requests while it idles between operating cycles, so that the responsiveness of a request does not depend on the cycle interval.
+This does not add a second loop or a thread, and it does not start an additional operating cycle: the cycle deadline is unchanged, and the idle servicing is bounded in the same way as servicing within a cycle.
+A request that arrives while an operating cycle is in progress waits for the end of that cycle.
+Each phase of the control loop shall therefore be time-bounded, so that a long-running phase cannot delay external communication indefinitely.
+
 === Autonomous Actions Use the Command Path
 
 Autonomous policy evaluation shall not create a second actuator-control path.
@@ -613,6 +618,43 @@ That distinction shall remain explicit for process supervision (see "Process Sup
 
 Other lifecycle requests, such as a restart request or entering maintenance mode, are not classified here.
 Each shall be classified explicitly when it is introduced.
+
+=== Request Classes
+
+Every request that reaches the Engine through a client interface belongs to exactly one class.
+The Engine distinguishes them explicitly when it dispatches a request.
+
+[cols="2,4,3",options="header"]
+|===
+|Class |Meaning |Persistence and replay
+
+|Query
+|A read-only request for information the Engine already has (see "Query Path").
+It changes no physical or logical operating state.
+|No durable command journal. Nothing about the request is persisted, and it is never replayed after a restart.
+Its result is not "accepted work".
+
+|Operational command
+|A request to change physical or logical operating state (see "Unified Command Execution Architecture").
+|Requires the "Durable Command Journal". Acceptance is durable.
+
+|Lifecycle-control request
+|A request that the Engine process change its own lifecycle (see "Lifecycle-Control Requests"). The first one is STOP.
+|Not journaled as an operational command and never replayed. Recorded as evidence in the lifecycle audit history.
+|===
+
+The first queries are two stateless diagnostics for proving the communication path.
+`ping` returns Engine-generated runtime information (the execution identifier, the process identifier, the number of completed operating cycles and the Engine's current UTC time).
+`echo` returns the text it was given, after Engine-side validation.
+Neither operates hardware or changes any state.
+They are not added to the lifecycle audit history, which records lifecycle evidence only.
+
+A request correlation identifier lets a client match an answer to its request and lets diagnostic traces name a request without quoting its content.
+It is not a durable command identifier and not an idempotency key.
+A query answer is never described as "accepted": that word is reserved for durable acceptance of an operational command (see "Durable Command Journal").
+
+Authorization applies to every class.
+Linux access control lets a client connect (see "Local Administrative Access"), and the Engine independently validates each request, whatever its class.
 
 === API Process Separation
 

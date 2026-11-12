@@ -446,7 +446,78 @@ External communication shall never become the clock that drives the Engine.
 The Engine may also service pending external requests while it idles between operating cycles, so that the responsiveness of a request does not depend on the cycle interval.
 This does not add a second loop or a thread, and it does not start an additional operating cycle: the cycle deadline is unchanged, and the idle servicing is bounded in the same way as servicing within a cycle.
 A request that arrives while an operating cycle is in progress waits for the end of that cycle.
-Each phase of the control loop shall therefore be time-bounded, so that a long-running phase cannot delay external communication indefinitely.
+Each phase of the control loop shall therefore be time-bounded, so that a long-running phase cannot delay external communication indefinitely (see "Operating-Cycle Phases").
+
+=== Operating-Cycle Phases
+
+The terms "control cycle" and "operating cycle" denote the same thing: one pass of the Engine through its outer loop.
+The code uses "operating cycle" (`Engine.run_operating_cycle`).
+
+One operating cycle passes through the following phases, in this order:
+
+[cols="1,3,3",options="header"]
+|===
+|Phase |Responsibility |Current implementation
+
+|`ACQUIRE_OBSERVATIONS`
+|Read sensors and validate the readings as observations.
+|Placeholder. Reads nothing.
+
+|`RECONCILE_STATE`
+|Derive the validated system state from observations and known actuator state.
+|Placeholder. Keeps no state.
+
+|`INGEST_EXTERNAL_INTENTS`
+|Service pending external requests within the ingress bounds (see "Bounded External Ingress").
+|Services pending local administrative IPC requests.
+
+|`EVALUATE_SCHEDULED_WORK`
+|Materialize due scheduled occurrences as commands (see "Scheduled Actions Use the Command Path").
+|Placeholder. Creates nothing.
+
+|`EVALUATE_CONTROL_POLICIES`
+|Evaluate autonomous control policies and produce action intents (see "Autonomous Actions Use the Command Path").
+|Placeholder. Decides nothing.
+
+|`EXECUTE_READY_COMMANDS`
+|Execute ready commands, exclusively through the durable command journal and the unified command path.
+|Placeholder. Executes nothing and accesses no hardware.
+
+|`FINALIZE_CYCLE`
+|Persist required cycle state and refresh the health heartbeat (see "Meaningful Health Heartbeat").
+|Placeholder. Persists nothing.
+|===
+
+This order follows "Engine Outer Loop".
+A cycle counts as completed only when all of its phases have finished.
+A placeholder phase does nothing and shall not be described as performing the responsibility it is reserved for.
+
+Phase time limits::
+Every phase has a declared time limit.
+The limits are cooperative budgets, not pre-emptive deadlines: the Engine executes in one thread and cannot interrupt a running phase.
+A phase shall not start further work once its budget is used up, and every operation within a phase shall bound its own duration.
+The Engine measures the duration of each phase with the monotonic clock (see "Time Handling") and reports a phase that exceeded its limit as a diagnostic warning.
+An overrun does not stop the Engine.
+A phase that blocks indefinitely cannot be detected reliably by the thread executing it; detecting that is the responsibility of external supervision and the watchdog (see "Process Supervision", "Meaningful Health Heartbeat" and "Hardware Watchdog").
+The sum of the phase limits bounds the time a request waits for a cycle in progress, and shall remain well below the timeout used by local clients.
+
+Cycle scheduling::
+Each cycle is due one cycle interval after the start of the previous cycle, measured with the monotonic clock.
+A cycle that takes longer than the interval is followed immediately by the next cycle; missed cycles are not caught up.
+
+Phase failure::
+An unexpected exception in a phase ends the cycle at that phase: the remaining phases do not run and the cycle is not counted.
+In the current implementation, the Engine then follows its failure path: the failure, with the phase and the cycle number, is recorded in the lifecycle audit history, the Engine shuts down and the process exits with a failure status.
+There is as yet no retry, phase-level recovery or degraded mode (see "Degraded Operation" and "Fault Monitoring, Retry, and Escalation").
+
+Stop requests::
+A controlled-shutdown request, or a handled termination signal, does not interrupt a cycle in progress.
+The cycle completes its remaining phases, each of which is bounded, and no further cycle starts.
+Before physical command execution is introduced, this behaviour shall be reviewed to ensure that no unsafe new physical operation is started after a shutdown has been requested.
+
+Idle servicing::
+Requests serviced while the Engine idles between cycles (see "Bounded External Ingress") are not part of any phase.
+Idle servicing runs no phase and starts no cycle.
 
 === Autonomous Actions Use the Command Path
 

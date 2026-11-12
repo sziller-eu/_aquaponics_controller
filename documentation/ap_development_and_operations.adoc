@@ -684,6 +684,7 @@ Sockets and audit files are created in private temporary directories.
 The Engine foundation tests cover:
 
 * `test_engine_lifecycle.py`: Engine lifecycle in one process with a scripted stand-in for the IPC ingress: single startup, repeated cycles, STOP handling, signals, unexpected exceptions, failed cleanup, startup conflicts, audit failures, refusal of unauthorized peers and unsupported operations, pacing and CPU use, interruptible idle waiting, non-replay of earlier STOP records. It also covers the request dispatcher (`ping` and `echo` results, argument validation including Unicode and the 256-character boundary, authorization of queries, request classes, no audit or persistence of queries, diagnostic traces) and the responsive idle wait (requests serviced while idling without starting a cycle, the unchanged cycle deadline under request bursts, readiness without progress, a wake-up arriving at any moment, failure while servicing, release of the wake-up resources).
+* `test_cycle_phases.py`: the operating-cycle phases in one process: the approved phase order, each phase once per cycle, counting a cycle only after its last phase, request servicing only in `INGEST_EXTERNAL_INTENTS` and never as a phase while idling, an exception in each phase (later phases skipped, cycle not counted, `cycle_phase` and `cycle_number` recorded), overrun warnings for each phase with a simulated clock, no catch-up after a long cycle, STOP and signals during each phase, the time limits and their relation to the ingress bounds and the `ape` timeout, placeholders that do nothing and leave no trace on disk.
 * `test_idle_wait.py`: the readiness-driven idle wait with real sockets: timeout, wake-up before and during a wait, consumption of wake-ups, readiness of the ingress socket, ignoring it on request, release of descriptors.
 * `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds (including the idle-wait time limit), `0700`/`0600` permissions, peer credentials, single-instance refusal, stale endpoint replacement, cleanup, the readiness source, correlation identifiers, and traces that never contain request arguments.
 * `test_lifecycle_audit.py`: record content, appending across executions, flushing, failure to persist, partly written lines.
@@ -1698,6 +1699,8 @@ The IPC endpoint shall not be exposed more broadly than required.
 The current Engine is a development foundation, not a production controller.
 
 It provides a continuously repeating operating cycle, a local administrative IPC interface, a lifecycle audit history, and controlled shutdown.
+Each operating cycle passes through the seven phases described in "Operating-Cycle Phases" in the architecture chapter.
+Only `INGEST_EXTERNAL_INTENTS`, which services administrative requests, does any work; the other phases are placeholders that do nothing.
 It does not provide:
 
 * hardware, GPIO or relay control;
@@ -1774,6 +1777,16 @@ A request, and a shutdown request in particular, is therefore answered promptly 
 The remaining delay is the duration of an operating cycle already in progress, plus the bounded time (see "Bounds") spent servicing requests.
 The `ape` default timeout of five seconds is unchanged.
 
+Phase time limits:: Each phase has a time limit, defined as a code constant in `cycle_phases.py`, not as an option: 0.9 seconds for `INGEST_EXTERNAL_INTENTS` (the ingress bounds below: 0.5 s of servicing plus one connection's read and write deadlines) and 0.1 seconds for each placeholder phase, 1.5 seconds per cycle in total.
+The limits are cooperative: a running phase is not interrupted.
+A phase that took longer than its limit is logged as a `WARNING` naming the phase, the elapsed time and the limit, and the Engine continues.
+An overrun is not a lifecycle audit event.
+A cycle that took longer than the cycle interval is followed immediately by the next one; missed cycles are not caught up.
+A phase that blocks indefinitely is not detected by the Engine itself; that is left to future supervision and watchdog integration.
+
+A shutdown request or a handled signal received during a cycle lets that cycle finish all its phases; no further cycle starts.
+Requests answered while the Engine idles run no phase.
+
 Idle servicing uses one thread and one loop.
 The idle wait ends when the cycle deadline is reached, when the IPC socket reports a waiting client, or when a stop is requested (including by `SIGINT` and `SIGTERM`).
 It costs no CPU while nothing happens.
@@ -1797,6 +1810,7 @@ It is not interpreted as an administrative request.
 
 |Unexpected Python exception
 |Logged with its traceback, cleanup attempted, never suppressed.
+An exception in an operating-cycle phase ends that cycle: its remaining phases do not run and it is not counted.
 |1
 
 |Command-line or configuration error
@@ -1985,7 +1999,7 @@ Events:
 |`STOP_REQUEST_RECEIVED` |An authorized operator STOP request was received through the administrative IPC. The record's timestamp and `engine_receipt_time_utc` are the Engine's authoritative receipt time. `client_reported_submission_time_utc` is what the client claimed, and is informational.
 |`SHUTDOWN_INITIATED` |Shutdown began. `reason` is `OPERATOR_STOP`, `SIGNAL` (context names the signal) or `FAILURE`.
 |`SHUTDOWN_COMPLETED` |Cleanup finished. Context reports whether cleanup succeeded, the exit status and the number of cycles.
-|`ENGINE_FAILURE` |A failure was detected. `reason` is the exception type; context names the phase (`startup` or `operation`).
+|`ENGINE_FAILURE` |A failure was detected. `reason` is the exception type; context names the lifecycle phase in `phase` (`startup` or `operation`). If the failure occurred inside an operating-cycle phase, context also contains `cycle_phase` (for example `RECONCILE_STATE`) and `cycle_number` (the cycle in progress, counting from 1). A failure outside every cycle phase, for example while answering a request between cycles, has neither field.
 |===
 
 Refused requests (unauthorized peers, malformed or unsupported requests) and the diagnostic queries `ping` and `echo` are logged diagnostically and are not lifecycle audit events.

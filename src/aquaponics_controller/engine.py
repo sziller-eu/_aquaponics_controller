@@ -3,15 +3,17 @@
 IMPORTANT: this is a development foundation, not a production controller.
 It has NO hardware, GPIO or relay control, NO sensors, NO scheduling, NO durable
 operational command journal, NO operational state database, NO state
-reconciliation, NO REST API and NO process supervision. The only thing an
-operating cycle does is service pending local administrative requests.
+reconciliation, NO REST API and NO process supervision. An operating cycle passes
+through seven named phases (see ``cycle_phases``); the only one that does real work
+is servicing pending local administrative requests, the others are placeholders.
 Requests are also answered while the Engine idles between cycles, which never
-starts an additional cycle.
+starts an additional cycle and runs no phase.
 
 Responsibilities are kept apart:
 
 - ``Engine.run``                  lifecycle coordinator: startup once, repeat cycles, shut down once.
-- ``Engine.run_operating_cycle``  exactly one cycle per call.
+- ``Engine.run_operating_cycle``  exactly one cycle per call: the phases, in order.
+- ``Engine._run_phase``           runs one phase: records which phase is running, measures its duration.
 - ``Engine._wait_for_next_cycle`` idle until the next cycle is due, answering requests meanwhile.
 - ``Engine._handle_administrative_request``  the one entry point for every request: authorize, dispatch.
 - ``Engine._shutdown``            cleanup, attempted once.
@@ -30,6 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from .clock import SystemClock, format_utc
+from .cycle_phases import PHASE_TIME_LIMITS_SECONDS, CyclePhase
 from .idle_wait import IdleWait
 from .ipc_protocol import (
     ERROR_INVALID_ARGUMENTS,
@@ -140,6 +143,7 @@ class Engine:
         self._exit_status: ExitStatus | None = None
         self._startup_count = 0
         self._cycles_completed = 0
+        self._current_phase: CyclePhase | None = None  # set while a phase runs; left set if it raises
 
     # ------------------------------------------------------------------ observation
 
@@ -210,14 +214,78 @@ class Engine:
             self._wait_for_next_cycle(cycle_started)
 
     def run_operating_cycle(self) -> None:
-        """Execute exactly one operating cycle.
+        """Execute exactly one operating cycle: every phase once, in this order.
 
-        Currently, the cycle only services pending local administrative requests.
-        It performs no physical control and claims no other functionality.
+        Only INGEST_EXTERNAL_INTENTS does real work so far; the other phases are placeholders that
+        do nothing. The cycle performs no physical control.
+
+        An exception from a phase ends the cycle there: the remaining phases do not run, the cycle
+        is not counted, and the exception reaches ``run``, which takes the failure path. A stop
+        request does not interrupt a cycle; it is checked between cycles (every phase is bounded).
         """
-        self._ingress.service_pending_requests(self._handle_administrative_request)
+        self._run_phase(CyclePhase.ACQUIRE_OBSERVATIONS, self._acquire_observations)
+        self._run_phase(CyclePhase.RECONCILE_STATE, self._reconcile_state)
+        self._run_phase(CyclePhase.INGEST_EXTERNAL_INTENTS, self._ingest_external_intents)
+        self._run_phase(CyclePhase.EVALUATE_SCHEDULED_WORK, self._evaluate_scheduled_work)
+        self._run_phase(CyclePhase.EVALUATE_CONTROL_POLICIES, self._evaluate_control_policies)
+        self._run_phase(CyclePhase.EXECUTE_READY_COMMANDS, self._execute_ready_commands)
+        self._run_phase(CyclePhase.FINALIZE_CYCLE, self._finalize_cycle)
         self._cycles_completed += 1
         logger.debug("operating cycle %d completed", self._cycles_completed)
+
+    def _run_phase(self, phase: CyclePhase, perform_phase: Callable[[], None]) -> None:
+        """Run one phase, and warn if it took longer than its time limit.
+
+        The limit is a cooperative budget: a running phase cannot be interrupted, so an overrun is
+        detected afterwards and reported, and the Engine carries on. If the phase raises, the
+        current phase stays recorded, so the failure record can name it.
+        """
+        self._current_phase = phase
+        started = self._clock.monotonic()
+        perform_phase()
+        elapsed = self._clock.monotonic() - started
+        self._current_phase = None
+        time_limit = PHASE_TIME_LIMITS_SECONDS[phase]
+        if elapsed > time_limit:
+            logger.warning(
+                "operating-cycle phase %s exceeded its time limit: %.3f s elapsed, limit %.3f s (cycle %d)",
+                phase,
+                elapsed,
+                time_limit,
+                self._cycles_completed + 1,
+            )
+
+    # ------------------------------------------------------------------ operating-cycle phases
+
+    def _acquire_observations(self) -> None:
+        """NOT IMPLEMENTED: placeholder. Reads no sensor and records nothing."""
+
+    def _reconcile_state(self) -> None:
+        """NOT IMPLEMENTED: placeholder. Keeps no system state and persists nothing."""
+
+    def _ingest_external_intents(self) -> None:
+        """Service the local administrative requests that are waiting, within the ingress bounds.
+
+        The ingress stops starting new connections after its own admission budget, which together
+        with one connection's read and write deadlines fits this phase's time limit.
+        """
+        self._ingress.service_pending_requests(self._handle_administrative_request)
+
+    def _evaluate_scheduled_work(self) -> None:
+        """NOT IMPLEMENTED: placeholder. There is no scheduler; no command is created."""
+
+    def _evaluate_control_policies(self) -> None:
+        """NOT IMPLEMENTED: placeholder. No control policy exists; nothing is decided."""
+
+    def _execute_ready_commands(self) -> None:
+        """NOT IMPLEMENTED: placeholder. Executes nothing and touches no hardware.
+
+        When implemented, this phase may execute only commands from the durable command journal,
+        through the unified command path (see "Unified Command Execution Architecture").
+        """
+
+    def _finalize_cycle(self) -> None:
+        """NOT IMPLEMENTED: placeholder. Persists no state and refreshes no health heartbeat."""
 
     def _wait_for_next_cycle(self, cycle_started: float) -> None:
         """Idle until the next cycle is due, answering client requests that arrive meanwhile.
@@ -375,17 +443,21 @@ class Engine:
 
     def _record_failure(self, exc: Exception) -> None:
         phase = "startup" if self._state is LifecycleState.STARTING else "operation"
+        context = {"phase": phase, "message": str(exc)}
+        if self._current_phase is not None:
+            # The failure happened inside an operating-cycle phase: name the phase and the cycle.
+            context["cycle_phase"] = str(self._current_phase)
+            context["cycle_number"] = self._cycles_completed + 1
         self._failure = exc
         # A failure outranks any stop already requested: the outcome must not look like a clean stop.
         self._stop_reason = ShutdownReason.FAILURE
         self._stop_context = {}
         self._stop_requested.set()
-        logger.error("Engine failure during %s: %s", phase, exc, exc_info=exc)
-        self._audit.record(
-            LifecycleEvent.ENGINE_FAILURE,
-            reason=type(exc).__name__,
-            context={"phase": phase, "message": str(exc)},
-        )
+        where = phase
+        if "cycle_phase" in context:
+            where += f", cycle phase {context['cycle_phase']} of cycle {context['cycle_number']}"
+        logger.error("Engine failure during %s: %s", where, exc, exc_info=exc)
+        self._audit.record(LifecycleEvent.ENGINE_FAILURE, reason=type(exc).__name__, context=context)
 
     def _shutdown(self) -> ExitStatus:
         """Controlled shutdown and cleanup, attempted once. Return the process exit status."""

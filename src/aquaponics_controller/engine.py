@@ -5,16 +5,20 @@ It has NO hardware, GPIO or relay control, NO sensors, NO scheduling, NO durable
 operational command journal, NO operational state database, NO state
 reconciliation, NO REST API and NO process supervision. The only thing an
 operating cycle does is service pending local administrative requests.
+Requests are also answered while the Engine idles between cycles, which never
+starts an additional cycle.
 
 Responsibilities are kept apart:
 
 - ``Engine.run``                  lifecycle coordinator: startup once, repeat cycles, shut down once.
 - ``Engine.run_operating_cycle``  exactly one cycle per call.
+- ``Engine._wait_for_next_cycle`` idle until the next cycle is due, answering requests meanwhile.
+- ``Engine._handle_administrative_request``  the one entry point for every request: authorize, dispatch.
 - ``Engine._shutdown``            cleanup, attempted once.
 
 Execution is sequential: no threads, no multiprocessing, no asynchronous framework.
-Signal handlers (installed by the entry point) only set a stop flag; everything
-else happens here, in the normal flow.
+Signal handlers (installed by the entry point) only set a stop flag and wake the
+idle wait; everything else happens here, in the normal flow.
 """
 
 import enum
@@ -22,12 +26,18 @@ import logging
 import os
 import signal
 import threading
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 
 from .clock import SystemClock, format_utc
+from .idle_wait import IdleWait
 from .ipc_protocol import (
+    ERROR_INVALID_ARGUMENTS,
     ERROR_PEER_NOT_AUTHORIZED,
     ERROR_UNSUPPORTED_OPERATION,
+    MAX_ECHO_TEXT_LENGTH,
+    OPERATION_ECHO,
+    OPERATION_PING,
     OPERATION_STOP,
     STATUS_SHUTDOWN_ALREADY_INITIATED,
     STATUS_SHUTDOWN_INITIATED,
@@ -39,6 +49,30 @@ from .lifecycle_audit import LifecycleAudit, LifecycleEvent
 from .local_ingress import EndpointInUseError, LocalAdministrativeIngress
 
 logger = logging.getLogger(__name__)
+
+
+# After readiness produced no progress (for example accept() keeps failing because the process is out of
+# file descriptors) the listening socket is ignored for this long. Without it a socket that stays readable
+# would make the idle wait spin at full CPU. Requests are delayed by at most this much in that fault case.
+INGRESS_NO_PROGRESS_BACKOFF_SECONDS = 0.25
+
+
+class RequestClass(enum.Enum):
+    """What kind of request this is (see "Request Classes" in the architecture documentation).
+
+    Operational commands, which change physical or logical operating state and need the durable
+    command journal, are deliberately absent: none is implemented yet, and none may be added here
+    without that journal.
+    """
+
+    QUERY = "query"  # read-only and stateless: no journal, nothing persisted, nothing replayed
+    LIFECYCLE_CONTROL = "lifecycle-control"  # changes the Engine process's own lifecycle (STOP)
+
+
+@dataclass(frozen=True)
+class SupportedOperation:
+    request_class: RequestClass
+    process: Callable[[AdministrativeRequest, PeerIdentity], AdministrativeResponse]
 
 
 class LifecycleState(enum.Enum):
@@ -92,7 +126,13 @@ class Engine:
         self._clock = clock if clock is not None else SystemClock()
 
         self._state = LifecycleState.CREATED
-        self._stop_requested = threading.Event()  # used as an interruptible timer; no threads are created
+        self._stop_requested = threading.Event()  # the stop flag only; no threads are created
+        self._idle_wait = IdleWait()
+        self._supported_operations = {
+            OPERATION_PING: SupportedOperation(RequestClass.QUERY, self._answer_ping_query),
+            OPERATION_ECHO: SupportedOperation(RequestClass.QUERY, self._answer_echo_query),
+            OPERATION_STOP: SupportedOperation(RequestClass.LIFECYCLE_CONTROL, self._handle_stop_request),
+        }
         self._stop_reason: ShutdownReason | None = None
         self._stop_context: dict = {}
         self._failure: Exception | None = None
@@ -153,6 +193,7 @@ class Engine:
         )
 
         self._ingress.open()
+        self._idle_wait.open(self._ingress.readiness_source)
 
         self._state = LifecycleState.RUNNING
         self._audit.record(LifecycleEvent.ENGINE_RUNNING)
@@ -179,10 +220,32 @@ class Engine:
         logger.debug("operating cycle %d completed", self._cycles_completed)
 
     def _wait_for_next_cycle(self, cycle_started: float) -> None:
-        """Idle until the next cycle is due. Bounded by the cycle interval; ends early on a stop request."""
-        remaining = self._config.cycle_interval_seconds - (self._clock.monotonic() - cycle_started)
-        if remaining > 0:
-            self._stop_requested.wait(remaining)
+        """Idle until the next cycle is due, answering client requests that arrive meanwhile.
+
+        The deadline is fixed once, from the start of the cycle that just ran, and never moves:
+        a request is answered sooner, it does not make a cycle start sooner or later (beyond the
+        bounded servicing time below). Servicing here is the same bounded, Engine-owned path as
+        inside a cycle; it runs no operating cycle. The wait ends early on a stop request.
+        """
+        deadline = cycle_started + self._config.cycle_interval_seconds
+        ignore_ingress_until = 0.0
+        while not self._stop_requested.is_set():
+            now = self._clock.monotonic()
+            if now >= deadline:
+                return
+            backing_off = now < ignore_ingress_until
+            wake_at = min(deadline, ignore_ingress_until) if backing_off else deadline
+            if not self._idle_wait.wait(wake_at - now, watch_ingress=not backing_off):
+                continue  # timed out or woken: re-check the stop flag and the deadline
+            if self._stop_requested.is_set():
+                return
+            time_left = deadline - self._clock.monotonic()
+            if time_left <= 0:
+                return  # the cycle is due; whatever is waiting is serviced inside it
+            handled = self._ingress.service_pending_requests(self._handle_administrative_request, time_left)
+            if handled == 0:
+                logger.debug("IPC socket reported ready but no request was serviced; backing off")
+                ignore_ingress_until = self._clock.monotonic() + INGRESS_NO_PROGRESS_BACKOFF_SECONDS
 
     # ------------------------------------------------------------------ stop requests
 
@@ -199,18 +262,36 @@ class Engine:
         )
 
     def _request_stop(self, reason: ShutdownReason, context: dict) -> bool:
-        """Set the stop flag. The first reason wins. Return True if this call initiated the stop."""
+        """Set the stop flag and wake the idle wait. The first reason wins. Return True if this call initiated the stop."""
         if self._stop_requested.is_set():
             return False
         self._stop_reason = reason
         self._stop_context = context
-        self._stop_requested.set()
+        self._stop_requested.set()  # the flag first: it is the truth; the wake-up only shortens a wait
+        self._idle_wait.wake()
         return True
 
     def _handle_administrative_request(
         self, request: AdministrativeRequest, peer: PeerIdentity | None
     ) -> AdministrativeResponse:
-        """Validate one request received through the administrative IPC (Engine-side enforcement)."""
+        """The Engine's one entry point for requests received through the administrative IPC.
+
+        Every request is authorized, dispatched to a supported operation and answered, in that
+        order. The answer carries the request's correlation identifier. Nothing a client sends
+        can make this method raise or stop the Engine except an authorized STOP.
+        """
+        response = self._authorize_and_dispatch(request, peer)
+        logger.info(
+            "IPC request processed by the Engine: op=%r id=%r outcome=%s",
+            request.operation,
+            request.correlation_id,
+            "ok" if response.ok else response.error_code,
+        )
+        return replace(response, correlation_id=request.correlation_id)
+
+    def _authorize_and_dispatch(
+        self, request: AdministrativeRequest, peer: PeerIdentity | None
+    ) -> AdministrativeResponse:
         if peer is None or peer.uid not in self._config.administrative_uids:
             logger.warning("administrative request refused: peer %s is not authorized", peer)
             return AdministrativeResponse(
@@ -218,17 +299,60 @@ class Engine:
                 error_code=ERROR_PEER_NOT_AUTHORIZED,
                 message="the connecting Linux user is not authorized for administration",
             )
-        if request.operation != OPERATION_STOP:
+        operation = self._supported_operations.get(request.operation)
+        if operation is None:
             logger.warning("administrative request refused: unsupported operation %r", request.operation)
             return AdministrativeResponse(
                 False,
                 error_code=ERROR_UNSUPPORTED_OPERATION,
                 message=f"unsupported operation {request.operation!r}",
             )
-        return self._handle_stop_request(request, peer)
+        return operation.process(request, peer)
+
+    # ------------------------------------------------------------------ queries (read-only, stateless)
+
+    def _answer_ping_query(self, request: AdministrativeRequest, peer: PeerIdentity) -> AdministrativeResponse:
+        """PING: report that the Engine is reachable, from the Engine's own state. Changes nothing."""
+        if request.arguments:
+            return self._refuse_arguments("ping takes no arguments")
+        return AdministrativeResponse(
+            True,
+            result={
+                "reply": "pong",
+                "execution_id": self._execution_id,
+                "engine_pid": os.getpid(),
+                "cycles_completed": self._cycles_completed,  # completed cycles: one in progress is not counted
+                "engine_time_utc": format_utc(self._clock.utc_now()),
+            },
+        )
+
+    def _answer_echo_query(self, request: AdministrativeRequest, peer: PeerIdentity) -> AdministrativeResponse:
+        """ECHO: return the validated text unchanged. Changes nothing, and the text is never logged."""
+        arguments = request.arguments
+        if not isinstance(arguments, dict) or set(arguments) != {"text"}:
+            return self._refuse_arguments("echo requires exactly one argument: 'text'")
+        text = arguments["text"]
+        if not isinstance(text, str):
+            return self._refuse_arguments("argument 'text' must be a string")
+        if len(text) > MAX_ECHO_TEXT_LENGTH:
+            return self._refuse_arguments(f"argument 'text' must have at most {MAX_ECHO_TEXT_LENGTH} characters")
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            return self._refuse_arguments("argument 'text' is not valid Unicode text (unpaired surrogate)")
+        return AdministrativeResponse(True, result={"text": text})
+
+    @staticmethod
+    def _refuse_arguments(message: str) -> AdministrativeResponse:
+        logger.warning("administrative request refused: invalid arguments: %s", message)
+        return AdministrativeResponse(False, error_code=ERROR_INVALID_ARGUMENTS, message=message)
+
+    # ------------------------------------------------------------------ lifecycle control
 
     def _handle_stop_request(self, request: AdministrativeRequest, peer: PeerIdentity) -> AdministrativeResponse:
         """STOP is a lifecycle-control request: audited as evidence, acted on once, never journaled or replayed."""
+        if request.arguments:
+            return self._refuse_arguments("stop takes no arguments")
         requester = {"pid": peer.pid, "uid": peer.uid, "gid": peer.gid}
         already_initiated = self._stop_requested.is_set()
         client_time = request.client_submitted_at
@@ -308,12 +432,17 @@ class Engine:
 
     def _clean_up(self) -> bool:
         """Release the resources this Engine acquired. Best effort; failures are logged, never hidden."""
-        try:
-            self._ingress.close()
-        except Exception:
-            logger.exception("cleanup of the administrative IPC endpoint failed")
-            return False
-        return True
+        succeeded = True
+        for description, release in (
+            ("administrative IPC endpoint", self._ingress.close),
+            ("idle-wait channel", self._idle_wait.close),
+        ):
+            try:
+                release()
+            except Exception:
+                logger.exception("cleanup of the %s failed", description)
+                succeeded = False
+        return succeeded
 
     def _decide_exit_status(self, reason: ShutdownReason, cleanup_succeeded: bool) -> ExitStatus:
         if reason is ShutdownReason.FAILURE:

@@ -230,3 +230,122 @@ def test_an_overlong_endpoint_path_is_reported_as_unavailable(short_directory):
 
 def test_servicing_before_open_does_nothing(endpoint):
     assert LocalAdministrativeIngress(endpoint).service_pending_requests(RecordingHandler()) == 0
+
+
+# ---------------------------------------------------------------- readiness, time limit, correlation, traces (Issue #5)
+
+
+def test_the_readiness_source_exists_only_while_the_ingress_is_open(endpoint):
+    ingress = LocalAdministrativeIngress(endpoint)
+    assert ingress.readiness_source is None
+
+    ingress.open()
+    assert ingress.readiness_source is not None
+    ingress.close()
+
+    assert ingress.readiness_source is None
+
+
+def test_the_readiness_source_becomes_readable_when_a_client_waits(ingress, endpoint):
+    import select
+
+    source = ingress.readiness_source
+    assert select.select([source], [], [], 0)[0] == []  # nobody is waiting
+
+    with connect(endpoint):
+        assert select.select([source], [], [], 2)[0] == [source]
+
+
+def test_a_time_limit_tightens_the_budget_but_still_serves_one_connection(endpoint):
+    limits = IngressLimits(read_deadline_seconds=0.1, cycle_budget_seconds=5, max_connections_per_cycle=50, listen_backlog=32)
+    ingress = LocalAdministrativeIngress(endpoint, limits)
+    ingress.open()
+    stalled = [connect(endpoint) for _ in range(10)]
+    try:
+        started = time.monotonic()
+        handled = ingress.service_pending_requests(RecordingHandler(), time_limit_seconds=0.05)
+        elapsed = time.monotonic() - started
+    finally:
+        for client in stalled:
+            client.close()
+        ingress.close()
+
+    assert handled == 1  # progress is guaranteed; the rest wait for the next call
+    assert elapsed < 0.5
+
+
+def test_a_zero_time_limit_serves_nothing(ingress, endpoint):
+    with connect(endpoint):
+        assert ingress.service_pending_requests(RecordingHandler(), time_limit_seconds=0) == 0
+
+
+def test_a_time_limit_cannot_widen_the_configured_budget(endpoint):
+    limits = IngressLimits(read_deadline_seconds=0.1, cycle_budget_seconds=0.25, max_connections_per_cycle=50, listen_backlog=32)
+    ingress = LocalAdministrativeIngress(endpoint, limits)
+    ingress.open()
+    stalled = [connect(endpoint) for _ in range(20)]
+    try:
+        started = time.monotonic()
+        handled = ingress.service_pending_requests(RecordingHandler(), time_limit_seconds=60)
+        elapsed = time.monotonic() - started
+    finally:
+        for client in stalled:
+            client.close()
+        ingress.close()
+
+    assert elapsed < 0.6 and 0 < handled < 20
+
+
+def test_the_request_reaches_the_handler_with_its_identifier_and_arguments(ingress, endpoint):
+    from datetime import datetime, timezone
+
+    payload = protocol.encode_request(
+        "echo", datetime.now(timezone.utc), correlation_id="req-7", arguments={"text": "hi"}
+    )
+
+    _, handler = exchange(ingress, endpoint, payload)
+
+    (request, _peer), = handler.calls
+    assert (request.correlation_id, request.arguments) == ("req-7", {"text": "hi"})
+
+
+def test_a_refusal_carries_the_identifier_when_it_was_valid(ingress, endpoint):
+    answer, handler = exchange(ingress, endpoint, b'{"v": 1, "op": 7, "id": "req-8"}\n')
+
+    assert (answer["ok"], answer["error"], answer["id"]) == (False, protocol.ERROR_MALFORMED_REQUEST, "req-8")
+    assert handler.calls == []
+
+
+def test_an_invalid_identifier_is_refused_without_echoing_it_back(ingress, endpoint):
+    answer, handler = exchange(ingress, endpoint, b'{"v": 1, "op": "ping", "id": ' + b'"' + b"x" * 80 + b'"}\n')
+
+    assert answer["error"] == protocol.ERROR_INVALID_CORRELATION_ID
+    assert "id" not in answer
+    assert handler.calls == []
+
+
+def test_diagnostic_traces_name_the_request_but_never_its_arguments(ingress, endpoint, caplog):
+    from datetime import datetime, timezone
+
+    secret = "do-not-log-this-text"
+    payload = protocol.encode_request(
+        "echo", datetime.now(timezone.utc), correlation_id="trace-1", arguments={"text": secret}
+    )
+
+    with caplog.at_level("INFO"):
+        exchange(ingress, endpoint, payload)
+
+    assert "IPC request received: op='echo' id='trace-1'" in caplog.text
+    assert "IPC request answered: id='trace-1' ok=True delivered" in caplog.text
+    assert secret not in caplog.text
+
+
+def test_a_hostile_identifier_cannot_forge_log_lines(ingress, endpoint, caplog):
+    forged = "x\nINFO fake: shutdown completed"
+    payload = json.dumps({"v": 1, "op": "ping", "id": forged}).encode() + b"\n"
+
+    with caplog.at_level("INFO"):
+        exchange(ingress, endpoint, payload)
+
+    assert all(not line.startswith("INFO fake") for line in caplog.text.splitlines())
+    assert "\\n" in caplog.text  # quoted, not interpreted

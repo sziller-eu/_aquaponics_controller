@@ -685,6 +685,7 @@ The Engine foundation tests cover:
 
 * `test_engine_lifecycle.py`: Engine lifecycle in one process with a scripted stand-in for the IPC ingress: single startup, repeated cycles, STOP handling, signals, unexpected exceptions, failed cleanup, startup conflicts, audit failures, refusal of unauthorized peers and unsupported operations, pacing and CPU use, interruptible idle waiting, non-replay of earlier STOP records. It also covers the request dispatcher (`ping` and `echo` results, argument validation including Unicode and the 256-character boundary, authorization of queries, request classes, no audit or persistence of queries, diagnostic traces) and the responsive idle wait (requests serviced while idling without starting a cycle, the unchanged cycle deadline under request bursts, readiness without progress, a wake-up arriving at any moment, failure while servicing, release of the wake-up resources).
 * `test_cycle_phases.py`: the operating-cycle phases in one process: the approved phase order, each phase once per cycle, counting a cycle only after its last phase, request servicing only in `INGEST_EXTERNAL_INTENTS` and never as a phase while idling, an exception in each phase (later phases skipped, cycle not counted, `cycle_phase` and `cycle_number` recorded), overrun warnings for each phase with a simulated clock, no catch-up after a long cycle, STOP and signals during each phase, the time limits and their relation to the ingress bounds and the `ape` timeout, placeholders that do nothing and leave no trace on disk.
+* `test_diagnostic_logging.py`: diagnostic logging: the record format and its fields, the execution identifier on every record and identical to the audit history's, the cycle field inside cycles and `-` outside them, failures logged with their cycle number for every phase, no `INFO` output from idle cycles, no logging from signal handlers, opt-in repeat suppression (first occurrences, counting, summaries, flush, levels that may not be suppressed, separate categories per `accept()` errno, unlisted errors and refused requests never suppressed, bounded retention without exception objects), failing destinations (one report without record content or traceback, no exception raised, counts at shutdown, the Engine unaffected), the log file's size bound, rotation failure, permissions and fallback when it cannot be opened, and end to end the execution identifier and request trace without the `echo` text.
 * `test_idle_wait.py`: the readiness-driven idle wait with real sockets: timeout, wake-up before and during a wait, consumption of wake-ups, readiness of the ingress socket, ignoring it on request, release of descriptors.
 * `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds (including the idle-wait time limit), `0700`/`0600` permissions, peer credentials, single-instance refusal, stale endpoint replacement, cleanup, the readiness source, correlation identifiers, and traces that never contain request arguments.
 * `test_lifecycle_audit.py`: record content, appending across executions, flushing, failure to persist, partly written lines.
@@ -1769,7 +1770,10 @@ The Engine options are:
 |Operating cycle interval, between 0.01 and 60 seconds. The default is 1.0.
 
 |`--log-level LEVEL`
-|`DEBUG`, `INFO` (default), `WARNING` or `ERROR`. Diagnostic logs go to standard error.
+|`DEBUG`, `INFO` (default), `WARNING` or `ERROR`. Diagnostic logs always go to standard error. See "Diagnostic Logging (Initial Implementation)".
+
+|`--log-file PATH`
+|Also write diagnostic logs to this size-rotated file, bounded to 25 MiB in total. Not set by default. See "Diagnostic Logging (Initial Implementation)".
 |===
 
 The Engine services administrative requests during each operating cycle and also while it idles between cycles.
@@ -1780,6 +1784,7 @@ The `ape` default timeout of five seconds is unchanged.
 Phase time limits:: Each phase has a time limit, defined as a code constant in `cycle_phases.py`, not as an option: 0.9 seconds for `INGEST_EXTERNAL_INTENTS` (the ingress bounds below: 0.5 s of servicing plus one connection's read and write deadlines) and 0.1 seconds for each placeholder phase, 1.5 seconds per cycle in total.
 The limits are cooperative: a running phase is not interrupted.
 A phase that took longer than its limit is logged as a `WARNING` naming the phase, the elapsed time and the limit, and the Engine continues.
+Overruns of a phase that stays slow are subject to repeat suppression (category `phase-overrun:<PHASE>`, see "Diagnostic Logging (Initial Implementation)").
 An overrun is not a lifecycle audit event.
 A cycle that took longer than the cycle interval is followed immediately by the next one; missed cycles are not caught up.
 A phase that blocks indefinitely is not detected by the Engine itself; that is left to future supervision and watchdog integration.
@@ -1958,7 +1963,7 @@ Diagnostic traces:: For every request that is read, the Engine logs (at `INFO`) 
 The identifier is client-supplied text and is logged quoted.
 The arguments, in particular the `echo` text, are never logged.
 Refused requests are traced the same way, with the error code.
-This is a minimal trace, not the general logging architecture.
+Every trace line also carries the Engine execution identifier and the cycle field (see "Diagnostic Logging (Initial Implementation)"), so a request can be followed from receipt to answer within one execution.
 
 Acknowledgement:: `shutdown_initiated` means the Engine has decided to shut down.
 A `ping` or `echo` answer reports a result; it does not mean anything was accepted for later execution.
@@ -1976,6 +1981,85 @@ ape: permission denied for /path/to/engine.sock        (exit status 4)
 ----
 
 The Engine must keep running, and its lifecycle audit history must contain no `STOP_REQUEST_RECEIVED` for the attempt.
+
+=== Diagnostic Logging (Initial Implementation)
+
+Diagnostic logs describe what the Engine software did, for investigation.
+They are not authoritative: they are not the lifecycle audit history (see "Lifecycle Audit Persistence"), not the durable command journal and not state history, and nothing reads them to decide what to do.
+The implementation is `aquaponics_controller.diagnostic_logging`; it uses the Python standard library `logging` package, configured once per process by the Engine entry point.
+
+Format:: One text line per record:
++
+[source,text]
+----
+2026-11-12T10:00:49.917Z INFO engine exec=6f1c...e2 cycle=42 IPC request processed by the Engine: op='ping' id='a1' outcome=ok
+----
++
+The fields are: the UTC time with milliseconds; the level; the subsystem (the module name without the `aquaponics_controller.` prefix); `exec=`, the Engine execution identifier; `cycle=`, the number of the operating cycle in progress, or `-` outside a cycle (startup, requests answered while idling, shutdown); the message.
+A traceback, where present, follows on further lines.
+The timestamp comes from the logging framework and is informational; durations within messages are measured with the monotonic clock.
+
+Correlation:: The execution identifier is generated once by the entry point, before anything is logged, and the same value is given to diagnostic logging, the lifecycle audit history and the Engine.
+Every record of one execution carries it, so a log line can be matched to the execution's audit records.
+The cycle number is fixed at the start of each cycle.
+A failure raised inside a cycle is logged with that cycle's number, the same number the `ENGINE_FAILURE` audit record contains; records of the subsequent shutdown carry `cycle=-`.
+Requests are traced by their correlation identifier (see "Diagnostic traces" above).
+
+Levels:: As described in "Logging Levels" in the AI Code and Logic Guidelines.
+The default is `INFO`.
+Idle operating cycles log only at `DEBUG` (one record per cycle), so an idle Engine produces no `INFO` output.
+An Engine failure is logged at `ERROR` with its traceback.
+`CRITICAL` is not used while the Engine has no physical responsibilities.
+
+Destinations and storage:: Two destinations, with different storage guarantees:
++
+* Standard error, always. The Engine does not bound what is kept: that depends on whatever captures standard error. A terminal keeps nothing; redirecting standard error to a file in the shell gives an *unbounded* file and is not recommended; under `systemd`, journald keeps it according to its own configuration (persistence, size and rate limits), which belongs to the service setup.
+* The file given with `--log-file PATH`, optionally. The Engine bounds it: it is rotated at 5 MiB, and 4 rotated files are kept (`PATH.1` to `PATH.4`), at most 25 MiB in total. Sizes are counted in bytes. Only a single record larger than 5 MiB, written to an empty file, can make a file larger. If rotation fails, the record is dropped instead of appended beyond the limit. The directory is created with mode `0700` if it does not exist, and the file with mode `0600`. The file is not `fsync`-ed: recent lines can be lost on power loss.
++
+No remote or external logging service is used.
+
+Repeat suppression:: Only explicitly chosen, known, repetitive and low-information warnings are subject to repeat suppression, each under its own predefined category:
++
+[cols="2,5",options="header"]
+|===
+|Category |Warning
+
+|`ipc-accept-failed:EMFILE`, `ipc-accept-failed:ENFILE`, `ipc-accept-failed:ENOBUFS`, `ipc-accept-failed:ENOMEM`
+|Accepting an IPC connection failed because of descriptor or memory exhaustion. While the condition lasts this can recur every 0.25 seconds. An `accept()` failure with any other error is always logged.
+
+|`ingress-budget-exhausted`
+|The ingress time budget was used up with clients still waiting.
+
+|`phase-overrun:<PHASE>`, one per operating-cycle phase
+|An operating-cycle phase exceeded its time limit.
+|===
++
+Within a window of 300 seconds from the first logged occurrence, the first 3 occurrences of a category are logged (the third says that further repeats are counted); later ones are only counted.
+The next occurrence after the window has ended is preceded by one summary, for example `... 412 similar warnings suppressed in 300 s (category ipc-accept-failed:EMFILE; last: [Errno 24] Too many open files)`, and starts a new window.
+Pending summaries are written during shutdown.
+Each category keeps only counters and one sanitized description of the last suppressed occurrence (control characters escaped, at most 200 characters); no exception objects or message arguments are kept.
+Nothing else is suppressed: errors, lifecycle transitions, Engine failures, refused requests (unauthorized peers, malformed or unsupported requests), client disconnects, lifecycle audit failures and cleanup failures are always logged.
+
+Failure of a log destination:: A destination that cannot be written to never raises an error into the Engine and never stops it.
+Its first failure is reported once, as one line written directly to standard error (file descriptor 2), not through the logging system:
++
+[source,text]
+----
+aquaponics-engine: diagnostic log handler log-file failed (OSError, errno 28); further failures are counted
+----
++
+The report names only the destination, the exception type and the error number; it contains no traceback and nothing of the record being written.
+Later failures are counted, each new record is attempted again, and during shutdown the number of records that could not be written is logged through the remaining destinations.
+If the `--log-file` cannot be opened at startup, a warning is written to standard error and the Engine runs with standard error only: a problem with diagnostic logging does not prevent the Engine from starting.
+
+Never logged:: Request arguments (in particular the `echo` text), credentials and raw request bytes.
+Client-supplied identifiers are logged quoted.
+Signal handlers do not log: they only set the stop flag and wake the idle wait.
+
+Synchronous logging limitation:: Logging is synchronous; no thread or process writes logs on the Engine's behalf.
+The time spent writing a record is therefore not strictly bounded: a reader of standard error that stops reading (a full pipe, a paused terminal, a stalled journald) or slow or failing storage can block the Engine thread, and while it is blocked nothing else happens, including request handling and the operating-cycle schedule.
+In-process phase timing cannot detect this; detection belongs to the future health heartbeat and watchdog.
+*This limitation must be resolved before physical equipment control is enabled* (see "Logging" in the architecture chapter).
 
 === Lifecycle Audit Persistence
 
@@ -2106,6 +2190,9 @@ Production logs shall be:
 * separated from durable domain history where appropriate.
 
 Logging failure shall not normally terminate core physical control unless it indicates a wider storage failure requiring safe degradation.
+
+Writing a log record shall not block physical control for an unbounded time.
+The initial implementation does not yet meet this: its logging is synchronous (see "Diagnostic Logging (Initial Implementation)"), which must be resolved before physical equipment control is enabled.
 
 Sensitive information shall not be written unnecessarily to logs.
 

@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .clock import SystemClock
+from .diagnostic_logging import RepeatedWarningReporter
 from .ipc_protocol import (
     ERROR_MALFORMED_REQUEST,
     ERROR_REQUEST_TIMEOUT,
@@ -45,6 +46,16 @@ from .ipc_protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+# accept() failures that can repeat every few hundred milliseconds for as long as the condition
+# lasts (descriptor or memory exhaustion). Each is its own suppression category; an accept()
+# failure with any other errno is always logged in full.
+REPEATING_ACCEPT_FAILURES = {
+    errno.EMFILE: "EMFILE",
+    errno.ENFILE: "ENFILE",
+    errno.ENOBUFS: "ENOBUFS",
+    errno.ENOMEM: "ENOMEM",
+}
 
 RequestHandler = Callable[[AdministrativeRequest, PeerIdentity | None], AdministrativeResponse]
 
@@ -79,6 +90,20 @@ class LocalAdministrativeIngress:
         self._lock_descriptor: int | None = None
         self._listener: socket.socket | None = None
         self._bound_inode: int | None = None
+        # Opt-in repeat suppression for the two known repetitive, low-information warnings only.
+        # Protocol errors, refusals and disconnects of individual clients are never suppressed here.
+        self._accept_failure_reports = {
+            code: RepeatedWarningReporter(
+                logger, f"ipc-accept-failed:{name}", "accepting an IPC connection failed", clock=self._clock
+            )
+            for code, name in REPEATING_ACCEPT_FAILURES.items()
+        }
+        self._budget_exhausted_report = RepeatedWarningReporter(
+            logger,
+            "ingress-budget-exhausted",
+            "ingress time budget used up; remaining connections wait for the next cycle",
+            clock=self._clock,
+        )
 
     @property
     def endpoint(self) -> Path:
@@ -120,6 +145,8 @@ class LocalAdministrativeIngress:
         Everything is attempted; the first failure is raised afterwards so the caller knows
         that cleanup was incomplete.
         """
+        for report in (*self._accept_failure_reports.values(), self._budget_exhausted_report):
+            report.flush()  # nothing suppressed goes unmentioned
         first_error: OSError | None = None
         if self._listener is not None:
             try:
@@ -164,19 +191,26 @@ class LocalAdministrativeIngress:
         handled = 0
         while handled < self._limits.max_connections_per_cycle:
             if self._clock.monotonic() - started >= budget:
-                logger.warning("ingress time budget used up; remaining connections wait for the next cycle")
+                self._budget_exhausted_report.report(f"{handled} connections handled within {budget:.3f} s")
                 break
             try:
                 connection, _ = self._listener.accept()
             except BlockingIOError:
                 break
             except OSError as exc:
-                logger.warning("accepting an IPC connection failed: %s", exc)
+                self._report_accept_failure(exc)
                 break
             handled += 1
             with connection:
                 self._serve_connection(connection, handler)
         return handled
+
+    def _report_accept_failure(self, exc: OSError) -> None:
+        report = self._accept_failure_reports.get(exc.errno)
+        if report is None:
+            logger.warning("accepting an IPC connection failed: %s", exc)  # not a known repeating category
+        else:
+            report.report(f"[Errno {exc.errno}] {exc.strerror}")
 
     def _serve_connection(self, connection: socket.socket, handler: RequestHandler) -> None:
         peer = self._read_peer_identity(connection)

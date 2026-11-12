@@ -1107,10 +1107,28 @@ Examples include:
 * shutdown requested.
 
 Logs shall be aggregated centrally.
+This means one process-wide logging configuration, with the operating system's journal (journald) as the system collector.
+It does not mean remote log aggregation; the Engine does not depend on any external logging service.
 
 Logs must be bounded and rotated.
 
 No subsystem may consume unlimited storage through logging.
+
+Every diagnostic record shall identify the Engine execution that produced it, using the same execution identifier as the lifecycle audit history, and, where applicable, the operating cycle (see "Operating-Cycle Phases").
+
+A condition that persists can produce the same warning many times.
+Only explicitly chosen, known, repetitive and low-information warnings may be subject to repeat suppression, each under its own predefined category, with suppressed occurrences counted and summarized.
+Meaningfully different failures shall not be combined under one category.
+Errors, lifecycle transitions, Engine failures, security-relevant events and lifecycle audit failures shall not be suppressed.
+
+Diagnostic logs are not authoritative and are not used to decide what the Engine does.
+
+[IMPORTANT]
+====
+Writing diagnostic logs shall not block physical control for an unbounded time. +
+The initial implementation logs synchronously, so a stalled log destination can block the Engine.
+This must be resolved before physical equipment control is enabled.
+====
 
 === Telemetry
 

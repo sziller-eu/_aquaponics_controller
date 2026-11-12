@@ -33,6 +33,7 @@ from dataclasses import dataclass, field, replace
 
 from .clock import SystemClock, format_utc
 from .cycle_phases import PHASE_TIME_LIMITS_SECONDS, CyclePhase
+from .diagnostic_logging import RepeatedWarningReporter, log_context, log_handler_failure_counts
 from .idle_wait import IdleWait
 from .ipc_protocol import (
     ERROR_INVALID_ARGUMENTS,
@@ -144,6 +145,18 @@ class Engine:
         self._startup_count = 0
         self._cycles_completed = 0
         self._current_phase: CyclePhase | None = None  # set while a phase runs; left set if it raises
+        self._current_cycle_number: int | None = None  # the cycle in progress; left set if it raises
+        # Opt-in repeat suppression: one predefined category per phase (a persistently slow phase
+        # would otherwise warn every cycle). Nothing else in the Engine is suppressed.
+        self._phase_overrun_reports = {
+            phase: RepeatedWarningReporter(
+                logger,
+                f"phase-overrun:{phase}",
+                f"operating-cycle phase {phase} exceeded its time limit",
+                clock=self._clock,
+            )
+            for phase in CyclePhase
+        }
 
     # ------------------------------------------------------------------ observation
 
@@ -222,7 +235,12 @@ class Engine:
         An exception from a phase ends the cycle there: the remaining phases do not run, the cycle
         is not counted, and the exception reaches ``run``, which takes the failure path. A stop
         request does not interrupt a cycle; it is checked between cycles (every phase is bounded).
+
+        The cycle number is fixed once, here. It labels every diagnostic record of the cycle and,
+        if the cycle fails, the failure record; that is why it is not cleared when a phase raises.
         """
+        self._current_cycle_number = self._cycles_completed + 1
+        log_context.cycle = self._current_cycle_number
         self._run_phase(CyclePhase.ACQUIRE_OBSERVATIONS, self._acquire_observations)
         self._run_phase(CyclePhase.RECONCILE_STATE, self._reconcile_state)
         self._run_phase(CyclePhase.INGEST_EXTERNAL_INTENTS, self._ingest_external_intents)
@@ -232,13 +250,17 @@ class Engine:
         self._run_phase(CyclePhase.FINALIZE_CYCLE, self._finalize_cycle)
         self._cycles_completed += 1
         logger.debug("operating cycle %d completed", self._cycles_completed)
+        self._current_cycle_number = None
+        log_context.cycle = None
 
     def _run_phase(self, phase: CyclePhase, perform_phase: Callable[[], None]) -> None:
         """Run one phase, and warn if it took longer than its time limit.
 
         The limit is a cooperative budget: a running phase cannot be interrupted, so an overrun is
-        detected afterwards and reported, and the Engine carries on. If the phase raises, the
-        current phase stays recorded, so the failure record can name it.
+        detected afterwards and reported, and the Engine carries on. A phase that stays slow would
+        warn every cycle, so overruns are reported through a repeat-suppressing reporter (one
+        category per phase). If the phase raises, the current phase stays recorded, so the failure
+        record can name it.
         """
         self._current_phase = phase
         started = self._clock.monotonic()
@@ -247,12 +269,8 @@ class Engine:
         self._current_phase = None
         time_limit = PHASE_TIME_LIMITS_SECONDS[phase]
         if elapsed > time_limit:
-            logger.warning(
-                "operating-cycle phase %s exceeded its time limit: %.3f s elapsed, limit %.3f s (cycle %d)",
-                phase,
-                elapsed,
-                time_limit,
-                self._cycles_completed + 1,
+            self._phase_overrun_reports[phase].report(
+                f"{elapsed:.3f} s elapsed, limit {time_limit:.3f} s (cycle {self._current_cycle_number})"
             )
 
     # ------------------------------------------------------------------ operating-cycle phases
@@ -445,9 +463,10 @@ class Engine:
         phase = "startup" if self._state is LifecycleState.STARTING else "operation"
         context = {"phase": phase, "message": str(exc)}
         if self._current_phase is not None:
-            # The failure happened inside an operating-cycle phase: name the phase and the cycle.
+            # The failure happened inside an operating-cycle phase: name the phase and the cycle. The
+            # cycle number is the one the cycle's diagnostic records carry (still set: see run_operating_cycle).
             context["cycle_phase"] = str(self._current_phase)
-            context["cycle_number"] = self._cycles_completed + 1
+            context["cycle_number"] = self._current_cycle_number
         self._failure = exc
         # A failure outranks any stop already requested: the outcome must not look like a clean stop.
         self._stop_reason = ShutdownReason.FAILURE
@@ -466,6 +485,7 @@ class Engine:
             return self._exit_status
         self._shutdown_attempted = True
         self._state = LifecycleState.STOPPING
+        log_context.cycle = None  # shutdown is not part of any cycle (a failed cycle's records are already written)
 
         reason = self._stop_reason or ShutdownReason.FAILURE
         context = dict(self._stop_context)
@@ -473,6 +493,8 @@ class Engine:
         self._log_shutdown_cause(reason, context)
         self._audit.record(LifecycleEvent.SHUTDOWN_INITIATED, reason=reason.value, requester=requester, context=context)
 
+        for report in self._phase_overrun_reports.values():
+            report.flush()  # nothing suppressed goes unmentioned
         cleanup_succeeded = self._clean_up()
         self._exit_status = self._decide_exit_status(reason, cleanup_succeeded)
         self._state = LifecycleState.STOPPED
@@ -487,6 +509,7 @@ class Engine:
             },
         )
         self._audit.close()
+        log_handler_failure_counts()
         logger.info("Engine shutdown completed (exit status %d)", int(self._exit_status))
         return self._exit_status
 

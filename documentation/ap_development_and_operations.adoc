@@ -2015,14 +2015,18 @@ A repeated request during shutdown receives `shutdown_already_initiated`, if it 
 The word "accepted" is deliberately not used: it is reserved for durable acceptance of operational commands (see "Engine Ingress").
 
 Manual verification of cross-user denial:: Automated tests cannot assume a second Linux account.
-To verify it by hand, with the Engine running as user A and a second account B:
+To verify it by hand, run the Engine as user A and make the attempt as a second account B.
+`sudo` does not search a virtual environment (its `PATH` is its own `secure_path`), so `ape` is named by an absolute path that B can execute: for example `/opt/aquaponics/venv/bin/ape` where the service is installed, or the `ape` of a virtual environment B can read.
+A's development environment usually lies in A's home directory, which B often cannot enter.
 
 [source,text]
 ----
-$ sudo -u B ape -x --socket /path/to/engine.sock
+$ sudo -u B /path/to/venv/bin/ape -x --socket /path/to/engine.sock
 ape: permission denied for /path/to/engine.sock        (exit status 4)
 ----
 
+The result counts only if it is `ape`'s own refusal, as above: exit status 4 with `ape: permission denied`.
+A shell error such as "command not found" (127) or "Permission denied" on the executable (126) means B could not run `ape` at all, and nothing was tested.
 The Engine must keep running, and its lifecycle audit history must contain no `STOP_REQUEST_RECEIVED` for the attempt.
 
 === Lifecycle and IPC Failure Handling
@@ -2311,21 +2315,31 @@ An administrative group is future work.
 
 On a non-production workstation, or on the controller when installation there has been authorized.
 Run from a checkout of the reviewed release, with that release's commit checked out.
-The build and the virtual environment need Python 3.11 or later (Ubuntu 22.04's system `python3` is 3.10: use a newer interpreter there).
+Python interpreter:: The build and the service's virtual environment need Python 3.11 or later, and both use the *same* interpreter.
+The operator chooses an installed interpreter and names it by its *absolute path* (for example `/usr/bin/python3.12`); the default `python3` is not relied on, and it is not changed.
+On Ubuntu 22.04 `python3` is 3.10, so a newer interpreter must be installed alongside it (with its `venv` module: on Debian and Ubuntu the `python3.X-venv` package).
+Because the path is absolute and expanded by the operator's own shell, `sudo` runs exactly that interpreter whatever its own `PATH` (`secure_path`) is.
+Its version is checked before anything is installed, and the service environment's version is checked again after it is created.
 
-The package is built as the ordinary user, from an export of the committed revision, and only the resulting wheel is installed as `root`.
+Build as the ordinary user, install as `root`:: The package is built as the ordinary user, from an export of the committed revision, and only the resulting wheel is installed as `root`.
 Nothing is built as `root`, and nothing is written into the working repository: an uncommitted change cannot slip into the installation, and the checkout gets no `root`-owned build files.
+The build uses a temporary virtual environment of the chosen interpreter, so it neither depends on nor changes that interpreter's own packages.
 Building lets `pip` fetch the build requirements (`setuptools`) unless they are already present; an offline build needs them provisioned in advance.
 Installing the wheel needs no network: the package has no runtime dependencies.
 
 [source,text]
 ----
-$ build=$(mktemp -d)                                                   # as the ordinary user
+$ python=/usr/bin/python3.12          # as the ordinary user: an installed Python 3.11 or later, by absolute path
+$ check='import sys; sys.exit(0 if sys.version_info >= (3, 11) else "Python 3.11 or later is required, not " + sys.version.split()[0])'
+$ "$python" -c "$check"               # stop here if it reports an error
+$ build=$(mktemp -d)
 $ git archive --format=tar --prefix=source/ HEAD | tar -x -C "$build"
-$ python3 -m pip wheel --no-deps --wheel-dir "$build/wheel" "$build/source"
+$ "$python" -m venv "$build/venv"
+$ "$build/venv/bin/python" -m pip wheel --no-deps --wheel-dir "$build/wheel" "$build/source"
 $ sudo install -m 0644 deploy/sysusers.d/aquaponics.conf /etc/sysusers.d/aquaponics.conf
 $ sudo systemd-sysusers /etc/sysusers.d/aquaponics.conf
-$ sudo python3 -m venv /opt/aquaponics/venv
+$ sudo "$python" -m venv /opt/aquaponics/venv
+$ sudo /opt/aquaponics/venv/bin/python -c "$check"
 $ sudo /opt/aquaponics/venv/bin/python -m pip install --no-index --no-deps "$build"/wheel/aquaponics_controller-*.whl
 $ rm -r "$build"
 $ sudo install -m 0644 deploy/systemd/aquaponics-engine.service /etc/systemd/system/aquaponics-engine.service

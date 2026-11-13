@@ -530,6 +530,28 @@ def test_after_withdrawal_new_clients_find_no_engine_but_queued_ones_are_still_s
     queued.close()
 
 
+@pytest.mark.parametrize("shutting_down", [False, True], ids=["operation", "final-shutdown-pass"])
+def test_a_used_up_servicing_budget_is_reported_for_what_it_means(ingress, caplog, shutting_down):
+    stalled = queue_clients(ingress.endpoint, [b""] * 3)  # each costs its 0.2 s read deadline
+    if shutting_down:
+        ingress.withdraw_endpoint()
+
+    with caplog.at_level(logging.WARNING):
+        handled = ingress.service_pending_requests(RecordingHandler(), SHUTDOWN_SERVICING_TIME_LIMIT_SECONDS)
+
+    assert handled == 2  # the limits are the same either way: budget used up after two stalled clients
+    budget_messages = [r.getMessage() for r in caplog.records if "budget used up" in r.getMessage()]
+    assert len(budget_messages) == 1
+    if shutting_down:
+        assert budget_messages[0].startswith("shutdown servicing budget used up (2 connections handled within 0.250 s)")
+        assert "remaining queued connections may not receive an answer" in budget_messages[0]
+        assert "next cycle" not in budget_messages[0]
+    else:
+        assert "remaining connections wait for the next cycle" in budget_messages[0]
+    for client in stalled:
+        client.close()
+
+
 def test_withdrawal_never_removes_a_socket_this_ingress_did_not_bind(ingress):
     ingress.endpoint.unlink()
     impostor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

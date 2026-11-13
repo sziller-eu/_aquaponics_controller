@@ -130,6 +130,8 @@ class LocalAdministrativeIngress:
         self._lock_descriptor: int | None = None
         self._listener: socket.socket | None = None
         self._bound_inode: int | None = None
+        # Set by withdraw_endpoint(): from then on the only servicing left is the final pass of a shutdown.
+        self._withdrawn = False
         # Opt-in repeat suppression for the two known repetitive, low-information warnings only.
         # Protocol errors, refusals and disconnects of individual clients are never suppressed here.
         self._accept_failure_reports = {
@@ -220,6 +222,7 @@ class LocalAdministrativeIngress:
         now on finds no endpoint. Only the socket this instance bound is removed. If removing it
         fails, the error is raised and ``close()`` tries again (and reports it as a cleanup failure).
         """
+        self._withdrawn = True  # even if removing the path fails: the Engine is shutting down either way
         if self._bound_inode is None:
             return
         try:
@@ -248,7 +251,7 @@ class LocalAdministrativeIngress:
         handled = 0
         while handled < self._limits.max_connections_per_cycle:
             if self._clock.monotonic() - started >= budget:
-                self._budget_exhausted_report.report(f"{handled} connections handled within {budget:.3f} s")
+                self._report_budget_exhausted(handled, budget)
                 break
             try:
                 connection, _ = self._listener.accept()
@@ -269,6 +272,19 @@ class LocalAdministrativeIngress:
                 raise
             self._close_connection(connection)
         return handled
+
+    def _report_budget_exhausted(self, handled: int, budget: float) -> None:
+        if self._withdrawn:
+            # The final servicing pass of a shutdown: there is no next cycle for whoever is still queued.
+            # It happens at most once per execution, so it is not subject to repeat suppression.
+            logger.warning(
+                "shutdown servicing budget used up (%d connections handled within %.3f s); "
+                "remaining queued connections may not receive an answer",
+                handled,
+                budget,
+            )
+        else:
+            self._budget_exhausted_report.report(f"{handled} connections handled within {budget:.3f} s")
 
     def _report_accept_failure(self, exc: OSError) -> None:
         report = self._accept_failure_reports.get(exc.errno)

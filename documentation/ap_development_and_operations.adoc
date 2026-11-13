@@ -2040,7 +2040,7 @@ Shutdown servicing:: A controlled shutdown (operator STOP or handled signal) pro
 After an Engine failure there is no final pass: the shutdown goes straight to cleanup.
 An unexpected exception during the final pass is an Engine failure like any other: the client being served receives `internal_error` (best effort), `ENGINE_FAILURE` is recorded with phase `shutdown`, cleanup still runs exactly once, and the exit status is 1 (`SHUTDOWN_COMPLETED` keeps the reason that started the shutdown and records exit status 1).
 +
-*Acknowledged and lost requests.* A STOP is acknowledged only if the client received an answer (`shutdown_initiated` or `shutdown_already_initiated`); the Engine then also has a matching `STOP_REQUEST_RECEIVED` record. A request that got no answer was *not acknowledged* and must be treated as lost: the client cannot tell whether it was read.
+*Acknowledged and lost requests.* A STOP is acknowledged only if the client received an answer (`shutdown_initiated` or `shutdown_already_initiated`). The answer confirms that the Engine received the request and has initiated shutdown, or had already initiated it. It also reports, in `audit_recorded`, whether the Engine could persist the request's `STOP_REQUEST_RECEIVED` record: writing the lifecycle audit history can fail, and the Engine then still answers and shuts down, with `audit_recorded: false` (`ape` prints a warning). A persisted audit record is therefore not guaranteed for every acknowledged STOP. A request that got no answer was *not acknowledged* and must be treated as lost: the client cannot tell whether it was read.
 +
 [cols="3,3",options="header"]
 |===

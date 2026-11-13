@@ -448,6 +448,22 @@ This does not add a second loop or a thread, and it does not start an additional
 A request that arrives while an operating cycle is in progress waits for the end of that cycle.
 Each phase of the control loop shall therefore be time-bounded, so that a long-running phase cannot delay external communication indefinitely (see "Operating-Cycle Phases").
 
+The queue of waiting connections is itself bounded.
+When it is full, further clients cannot connect until the Engine catches up; this never blocks the Engine.
+A client may retry *connecting* while the queue is full, because nothing has been sent yet, but shall never resend a request after any of it has been sent.
+
+During a controlled shutdown, the Engine first withdraws its endpoint, so that no new client can connect, and then serves the clients already queued once, within the usual bounds and authorization rules and for a short, fixed time.
+It does not promise an answer to every queued client and never extends the shutdown to drain the queue: a request that receives no answer was not acknowledged.
+After an Engine failure there is no such pass.
+
+Failures around external communication are kept in three classes:
+
+* a *per-connection failure*, limited to an explicitly listed set of recoverable errors on one client connection (the client went away, its deadline expired, a transient kernel resource shortage), ends that connection only;
+* a *protocol refusal* is answered with an error code; the Engine continues;
+* everything else is an *Engine failure* and follows the fail-stop path. Broad exception handling that could hide a genuine Engine fault is not permitted. A client whose request was being handled when the Engine failed may first receive a fixed `internal_error` answer, which never contains internal exception details.
+
+The implementation is described in "Lifecycle and IPC Failure Handling" in the Development and Operations documentation.
+
 === Operating-Cycle Phases
 
 The terms "control cycle" and "operating cycle" denote the same thing: one pass of the Engine through its outer loop.
@@ -722,6 +738,9 @@ They are not added to the lifecycle audit history, which records lifecycle evide
 
 A request correlation identifier lets a client match an answer to its request and lets diagnostic traces name a request without quoting its content.
 It is not a durable command identifier and not an idempotency key.
+Administrative requests are therefore not deduplicated: a query is safe to repeat, and a repeated STOP within one Engine execution is answered as already initiated, without a second shutdown.
+A STOP sent after a restart is a new STOP for the new execution.
+These rules apply to queries and lifecycle-control requests only; operational commands follow "Command Idempotency".
 A query answer is never described as "accepted": that word is reserved for durable acceptance of an operational command (see "Durable Command Journal").
 
 Authorization applies to every class.

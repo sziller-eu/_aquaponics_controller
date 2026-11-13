@@ -31,14 +31,18 @@ class ScriptedIngress:
     endpoint = "scripted-endpoint"
     readiness_source = None  # no socket: the Engine falls back to a plain interruptible timed wait
 
-    def __init__(self, script=None, *, open_error=None, close_error=None):
+    def __init__(self, script=None, *, open_error=None, close_error=None, final_pass=None, withdraw_error=None):
         self.script = script or {}
         self.open_error = open_error
         self.close_error = close_error
+        self.final_pass = final_pass  # what the final servicing pass during shutdown does (an action, or None)
+        self.withdraw_error = withdraw_error
         self.opened = 0
         self.closed = 0
+        self.withdrawn = 0
         self.cycle = 0
         self.responses = []
+        self.final_pass_limits = []  # the time limit of every call made after the endpoint was withdrawn
 
     def open(self):
         self.opened += 1
@@ -50,11 +54,24 @@ class ScriptedIngress:
         if self.close_error:
             raise self.close_error
 
-    def service_pending_requests(self, handler):
+    def withdraw_endpoint(self):
+        self.withdrawn += 1
+        if self.withdraw_error:
+            raise self.withdraw_error
+
+    def service_pending_requests(self, handler, time_limit_seconds=None):
+        if self.withdrawn:
+            return self._final_pass(handler, time_limit_seconds)
         self.cycle += 1
         action = self.script.get(self.cycle)
         if action:
             action(handler, self.responses)
+        return 0
+
+    def _final_pass(self, handler, time_limit_seconds):
+        self.final_pass_limits.append(time_limit_seconds)
+        if self.final_pass:
+            self.final_pass(handler, self.responses)
         return 0
 
 
@@ -83,6 +100,8 @@ class ReadyIngress(ScriptedIngress):
             pass
 
     def service_pending_requests(self, handler, time_limit_seconds=None):
+        if self.withdrawn:
+            return self._final_pass(handler, time_limit_seconds)
         self.calls.append((time.monotonic(), time_limit_seconds))
         if time_limit_seconds is None:
             return super().service_pending_requests(handler)  # in-cycle call: the usual scripted behaviour

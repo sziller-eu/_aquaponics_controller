@@ -9,9 +9,18 @@ Engine then calls ``service_pending_requests`` itself. The ingress starts no thr
 and runs nothing of its own.
 
 Access control is Linux filesystem permissions: the endpoint's directory and the
-socket are owner-only (0700 / 0600) by default. The peer credentials reported by
+socket are owner-only (0700 / 0600). The peer credentials reported by
 the kernel are passed on to the Engine for validation and audit. They supplement
-the file permissions; they do not replace them.
+the file permissions; they do not replace them. The endpoint's directory is
+validated before use (see ``_prepare_directory``): it must be a real directory, not
+a symbolic link, owned by the Engine's user and writable by nobody else.
+
+Failure classification (see "Lifecycle and IPC Failure Handling" in the operations documentation):
+only the recoverable errors in ``RECOVERABLE_CONNECTION_ERRNOS``, raised by an
+operation on one accepted client connection, are contained: that connection is
+closed and the Engine carries on. Any other exception propagates and becomes an
+Engine failure; when the request handler raised it, the client is first sent a
+fixed ``internal_error`` answer (best effort).
 
 Single instance: an exclusive ``flock`` on ``<endpoint>.lock`` is held for the
 life of the Engine. The kernel releases it if the process dies, so a crash never
@@ -33,9 +42,11 @@ from pathlib import Path
 from .clock import SystemClock
 from .diagnostic_logging import RepeatedWarningReporter
 from .ipc_protocol import (
+    ERROR_INTERNAL,
     ERROR_MALFORMED_REQUEST,
     ERROR_REQUEST_TIMEOUT,
     ERROR_REQUEST_TOO_LARGE,
+    INTERNAL_ERROR_MESSAGE,
     MAX_MESSAGE_BYTES,
     AdministrativeRequest,
     AdministrativeResponse,
@@ -56,6 +67,35 @@ REPEATING_ACCEPT_FAILURES = {
     errno.ENOBUFS: "ENOBUFS",
     errno.ENOMEM: "ENOMEM",
 }
+
+# The ONLY errors contained per connection (Issue #8, approved classification), and only when raised by an
+# operation on the accepted client connection itself (recv, sendall, settimeout, getsockopt, close):
+# - the peer went away: ECONNRESET, EPIPE, ECONNABORTED, ENOTCONN;
+# - a transient kernel resource shortage on that socket: ENOBUFS, ENOMEM, EAGAIN / EWOULDBLOCK.
+# The connection's own read or write deadline expiring (TimeoutError) is the third recoverable case.
+# Every other OSError (EBADF, EINVAL, ENOTSOCK, EFAULT, ...) points to a defect and is NOT contained.
+RECOVERABLE_CONNECTION_ERRNOS = frozenset(
+    {
+        errno.ECONNRESET,
+        errno.EPIPE,
+        errno.ECONNABORTED,
+        errno.ENOTCONN,
+        errno.ENOBUFS,
+        errno.ENOMEM,
+        errno.EAGAIN,
+        errno.EWOULDBLOCK,
+    }
+)
+
+
+def is_recoverable_connection_error(exc: OSError) -> bool:
+    """Whether an error from an operation on one client connection may be contained to that connection."""
+    return isinstance(exc, TimeoutError) or exc.errno in RECOVERABLE_CONNECTION_ERRNOS
+
+
+class _ClientClosedConnection(Exception):
+    """The client closed its connection before sending any request (not an error of the Engine)."""
+
 
 RequestHandler = Callable[[AdministrativeRequest, PeerIdentity | None], AdministrativeResponse]
 
@@ -172,6 +212,23 @@ class LocalAdministrativeIngress:
         if first_error is not None:
             raise first_error
 
+    def withdraw_endpoint(self) -> None:
+        """Remove the endpoint path so that no new client can connect; keep the listener and the lock.
+
+        Used at the start of a controlled shutdown: clients already queued on the listener can still
+        be served once (see the Engine's final servicing pass); a client that tries to connect from
+        now on finds no endpoint. Only the socket this instance bound is removed. If removing it
+        fails, the error is raised and ``close()`` tries again (and reports it as a cleanup failure).
+        """
+        if self._bound_inode is None:
+            return
+        try:
+            if self._endpoint.lstat().st_ino == self._bound_inode:
+                self._endpoint.unlink()
+        except FileNotFoundError:
+            pass
+        self._bound_inode = None  # nothing left for close() to remove
+
     # ------------------------------------------------------------------ servicing
 
     def service_pending_requests(self, handler: RequestHandler, time_limit_seconds: float | None = None) -> int:
@@ -201,8 +258,16 @@ class LocalAdministrativeIngress:
                 self._report_accept_failure(exc)
                 break
             handled += 1
-            with connection:
+            try:
                 self._serve_connection(connection, handler)
+            except BaseException:
+                # An Engine failure (or interruption) is on its way out: closing must not replace it.
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+                raise
+            self._close_connection(connection)
         return handled
 
     def _report_accept_failure(self, exc: OSError) -> None:
@@ -213,6 +278,12 @@ class LocalAdministrativeIngress:
             report.report(f"[Errno {exc.errno}] {exc.strerror}")
 
     def _serve_connection(self, connection: socket.socket, handler: RequestHandler) -> None:
+        """Read, decode, handle and answer one request.
+
+        Contained here (the connection ends, the Engine carries on): protocol errors (answered with
+        their refusal code), a client that closed without sending anything, and the recoverable
+        connection errors (``is_recoverable_connection_error``). Everything else propagates.
+        """
         peer = self._read_peer_identity(connection)
         try:
             line = self._read_request_line(connection)
@@ -228,13 +299,26 @@ class LocalAdministrativeIngress:
                 ),
             )
             return
-        except ConnectionError as exc:
-            logger.warning("IPC client %s disconnected before completing its request: %s", peer, exc)
+        except _ClientClosedConnection:
+            logger.warning("IPC client %s disconnected before completing its request: connection closed", peer)
+            return
+        except OSError as exc:
+            if not is_recoverable_connection_error(exc):
+                raise
+            if isinstance(exc, ConnectionError):
+                logger.warning("IPC client %s disconnected before completing its request: %s", peer, exc)
+            else:
+                logger.warning("IPC connection from %s failed while reading its request: %s", peer, exc)
             return
         # Diagnostic trace: receipt, (Engine processing is traced by the handler), answer. Only the
         # operation name and the correlation identifier are named, never the request's arguments.
         logger.info("IPC request received: op=%r id=%s peer=%s", request.operation, _describe_id(request.correlation_id), peer)
-        response = handler(request, peer)
+        try:
+            response = handler(request, peer)
+        except Exception:
+            # Not contained: the Engine takes its fail-stop path. The client is told first, best effort.
+            self._notify_internal_error(connection, request.correlation_id)
+            raise
         delivered = self._send(connection, response)
         logger.info(
             "IPC request answered: id=%s ok=%s %s",
@@ -242,6 +326,28 @@ class LocalAdministrativeIngress:
             response.ok,
             "delivered" if delivered else "NOT delivered",
         )
+
+    def _notify_internal_error(self, connection: socket.socket, correlation_id: str | None) -> None:
+        """Send the fixed internal_error answer: one attempt, within the write deadline, no exception details.
+
+        Called while the handler's exception is being handled. Whatever happens here must not replace
+        that exception, so a failure to send is reported and otherwise ignored (this is the only place
+        where errors are not classified: it is a courtesy to the client on the way to fail-stop).
+        """
+        try:
+            delivered = self._send(
+                connection,
+                AdministrativeResponse(
+                    False, error_code=ERROR_INTERNAL, message=INTERNAL_ERROR_MESSAGE, correlation_id=correlation_id
+                ),
+            )
+            logger.warning(
+                "IPC request %s failed inside the Engine: internal_error answer %s",
+                _describe_id(correlation_id),
+                "delivered" if delivered else "NOT delivered",
+            )
+        except Exception as exc:  # noqa: BLE001 - must never replace the handler's exception
+            logger.warning("internal_error answer could not be sent (%s)", type(exc).__name__)
 
     def _read_request_line(self, connection: socket.socket) -> bytes:
         deadline = self._clock.monotonic() + self._limits.read_deadline_seconds
@@ -258,61 +364,150 @@ class LocalAdministrativeIngress:
             if not chunk:
                 if received:
                     raise ProtocolError(ERROR_MALFORMED_REQUEST, "request ended without a newline")
-                raise ConnectionResetError("client closed the connection without sending a request")
+                raise _ClientClosedConnection()
             received += chunk
             if len(received) > MAX_MESSAGE_BYTES:
                 raise ProtocolError(ERROR_REQUEST_TOO_LARGE, f"request exceeds {MAX_MESSAGE_BYTES} bytes")
         return received.split(b"\n", 1)[0]
 
     def _send(self, connection: socket.socket, response: AdministrativeResponse) -> bool:
-        """Send one response within the write deadline. Return whether it was delivered."""
+        """Send one response within the write deadline. Return whether it was delivered.
+
+        A recoverable connection error means "not delivered"; any other error propagates.
+        """
         try:
             connection.settimeout(self._limits.write_deadline_seconds)
             connection.sendall(encode_response(response))
         except OSError as exc:
+            if not is_recoverable_connection_error(exc):
+                raise
             logger.warning("could not deliver IPC response: %s", exc)
             return False
         return True
 
     @staticmethod
+    def _close_connection(connection: socket.socket) -> None:
+        try:
+            connection.close()
+        except OSError as exc:
+            if not is_recoverable_connection_error(exc):
+                raise
+            logger.warning("closing an IPC connection failed: %s", exc)
+
+    @staticmethod
     def _read_peer_identity(connection: socket.socket) -> PeerIdentity | None:
+        """The peer's credentials, or None if they cannot be read (the request is then refused as unauthorized)."""
         try:
             raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
             pid, uid, gid = struct.unpack("3i", raw)
-        except (OSError, AttributeError, struct.error):
+        except OSError as exc:
+            if not is_recoverable_connection_error(exc):
+                raise
+            return None
+        except (AttributeError, struct.error):  # no SO_PEERCRED on this platform, or an unexpected size
             return None
         return PeerIdentity(pid=pid, uid=uid, gid=gid)
 
     # ------------------------------------------------------------------ endpoint setup
 
     def _prepare_directory(self) -> None:
+        """Create the endpoint's directory (0700) if it is missing, otherwise validate it.
+
+        Only this one directory is examined or changed, never its parents. It is opened without
+        following a symbolic link, and every check (and the one permitted correction) is made on
+        that open descriptor, so the directory checked is the directory changed:
+
+        - a symbolic link, or not a directory: refused;
+        - not owned by the Engine's user: refused;
+        - writable by group or others: refused (its content may already have been tampered with);
+        - only readable or searchable by group or others: restricted to 0700, with a warning.
+
+        A refusal raises IngressUnavailableError: the Engine does not start (there is no fallback
+        endpoint, which clients could not find).
+        """
         directory = self._endpoint.parent
-        if not directory.exists():
-            directory.mkdir(mode=0o700, parents=True)
-            directory.chmod(0o700)  # independent of the process umask
-        elif directory.stat().st_uid != os.geteuid():
-            raise IngressUnavailableError(f"IPC directory {directory} is not owned by the Engine's user")
+        created = False
+        try:
+            descriptor = self._open_directory(directory)
+        except FileNotFoundError:
+            try:
+                directory.mkdir(mode=0o700, parents=True)  # parents keep the default mode; only the leaf is ours
+                created = True
+            except FileExistsError:
+                pass  # created meanwhile: validated below like any existing directory
+            descriptor = self._open_directory(directory)
+        try:
+            status = os.fstat(descriptor)
+            if not stat.S_ISDIR(status.st_mode):
+                raise IngressUnavailableError(f"IPC directory {directory} is not a directory")
+            if status.st_uid != os.geteuid():
+                raise IngressUnavailableError(f"IPC directory {directory} is not owned by the Engine's user")
+            mode = stat.S_IMODE(status.st_mode)
+            if created:
+                if mode != 0o700:
+                    os.fchmod(descriptor, 0o700)  # independent of the process umask
+            elif mode & 0o022:
+                raise IngressUnavailableError(
+                    f"IPC directory {directory} is writable by group or others (mode {mode:04o}); refusing to use it"
+                )
+            elif mode & 0o077:
+                os.fchmod(descriptor, 0o700)
+                logger.warning("IPC directory %s had permissions %04o; restricted to 0700", directory, mode)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _open_directory(directory: Path) -> int:
+        try:
+            return os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError as exc:
+            # With O_DIRECTORY | O_NOFOLLOW, Linux reports a symbolic link as ENOTDIR (or ELOOP).
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                if directory.is_symlink():
+                    raise IngressUnavailableError(
+                        f"IPC directory {directory} is a symbolic link, which is not followed; refusing to use it"
+                    ) from None
+                raise IngressUnavailableError(f"IPC directory {directory} is not a directory") from None
+            raise
 
     def _acquire_instance_lock(self) -> None:
         lock_path = self._endpoint.with_name(self._endpoint.name + ".lock")
-        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
         try:
+            descriptor = os.open(lock_path, flags, 0o600)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise IngressUnavailableError(f"IPC lock file {lock_path} is a symbolic link; refusing to use it") from None
+            raise
+        try:
+            status = os.fstat(descriptor)
+            if not stat.S_ISREG(status.st_mode):
+                raise IngressUnavailableError(f"IPC lock file {lock_path} is not a regular file; refusing to use it")
+            if status.st_uid != os.geteuid():
+                raise IngressUnavailableError(f"IPC lock file {lock_path} is not owned by the Engine's user")
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             os.close(descriptor)
             if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
                 raise EndpointInUseError(f"another Engine is already using {self._endpoint}") from exc
             raise
+        except BaseException:
+            os.close(descriptor)
+            raise
         self._lock_descriptor = descriptor
 
     def _remove_stale_endpoint(self) -> None:
         # Holding the lock proves no live Engine owns the endpoint, so a socket left here is stale.
         try:
-            mode = self._endpoint.lstat().st_mode
+            status = self._endpoint.lstat()
         except FileNotFoundError:
             return
-        if not stat.S_ISSOCK(mode):
+        if not stat.S_ISSOCK(status.st_mode):
             raise IngressUnavailableError(f"{self._endpoint} exists and is not a socket; refusing to remove it")
+        if status.st_uid != os.geteuid():
+            raise IngressUnavailableError(
+                f"{self._endpoint} is a socket owned by another user; refusing to remove it"
+            )
         logger.warning("removing stale IPC endpoint left by an earlier execution: %s", self._endpoint)
         self._endpoint.unlink()
 

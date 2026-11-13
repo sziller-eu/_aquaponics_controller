@@ -687,12 +687,13 @@ The Engine foundation tests cover:
 * `test_cycle_phases.py`: the operating-cycle phases in one process: the approved phase order, each phase once per cycle, counting a cycle only after its last phase, request servicing only in `INGEST_EXTERNAL_INTENTS` and never as a phase while idling, an exception in each phase (later phases skipped, cycle not counted, `cycle_phase` and `cycle_number` recorded), overrun warnings for each phase with a simulated clock, no catch-up after a long cycle, STOP and signals during each phase, the time limits and their relation to the ingress bounds and the `ape` timeout, placeholders that do nothing and leave no trace on disk.
 * `test_diagnostic_logging.py`: diagnostic logging: the record format and its fields, the execution identifier on every record and identical to the audit history's, the cycle field inside cycles and `-` outside them, failures logged with their cycle number for every phase, no `INFO` output from idle cycles, no logging from signal handlers, opt-in repeat suppression (first occurrences, counting, summaries, flush, levels that may not be suppressed, separate categories per `accept()` errno, unlisted errors and refused requests never suppressed, bounded retention without exception objects), failing destinations (one report without record content or traceback, no exception raised, counts at shutdown, the Engine unaffected), the log file's size bound, rotation failure, permissions, refusal of unsafe destinations (symbolic links and hard links, also after rotation; named pipes with and without a reader; devices; directories; permissions that cannot be restricted), restriction of a permissive existing file, existing directories left unchanged, and fallback to standard error when the file cannot be opened or is refused, and end to end the execution identifier and request trace without the `echo` text.
 * `test_idle_wait.py`: the readiness-driven idle wait with real sockets: timeout, wake-up before and during a wait, consumption of wake-ups, readiness of the ingress socket, ignoring it on request, release of descriptors.
-* `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds (including the idle-wait time limit), `0700`/`0600` permissions, peer credentials, single-instance refusal, stale endpoint replacement, cleanup, the readiness source, correlation identifiers, and traces that never contain request arguments.
+* `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds (including the idle-wait time limit), `0700`/`0600` permissions, validation of the IPC directory (symbolic links, non-directories, other owners, directories writable by others refused; readable ones restricted; lock-file and stale-socket checks), peer credentials, single-instance refusal, stale endpoint replacement, cleanup, the readiness source, correlation identifiers, and traces that never contain request arguments.
 * `test_lifecycle_audit.py`: record content, appending across executions, flushing, failure to persist, partly written lines.
 * `test_ipc_protocol.py`: encoding, validation, endpoint resolution, the optional correlation identifier and arguments, and the size limit for the largest valid messages.
 * `test_cli.py`: the `ape` client against canned servers: what it sends, how it displays `ping`, `echo` and STOP answers, its exit status for every refusal and unintelligible answer, correlation checking, bounded waits, usage errors.
 * `test_engine_processes.py`: the Engine and `ape` as separate operating-system processes: `ape -x`, `SIGINT`, `SIGTERM`, an injected unexpected exception, a conflicting second start, `SIGKILL` followed by a restart, restart without replaying STOP, malformed requests against a live Engine, and every `ape` failure mode with bounded waits.
-* `test_request_processing.py`: the Engine and clients as separate processes: `ape --ping` and `ape --echo`, invalid requests, queries that leave no trace on disk or in the audit history, a 30-second cycle interval that does not delay answers or STOP, no extra operating cycles from requests, idle CPU use, descriptor stability, cycles that keep their pace under request streams and stalled clients.
+* `test_failure_handling.py`: lifecycle and IPC failure handling (Issue #8): `ape` retrying only the connection while the Engine's connection queue is full, its single overall deadline, a request never resent, immediate exit 3 or 4 for an unavailable Engine or a permission problem, `internal_error` answers (exit 6); exactly the approved recoverable connection errors contained per connection and every other error propagated; the fixed `internal_error` answer before a request-handler failure, without exception details, and the original exception kept; interruptions never answered; withdrawing the endpoint; the final servicing pass of a controlled shutdown (its limits, authorization, STOP answered "already initiated" and audited, clients beyond the limit unanswered, none after a failure, a failure during it recorded as `ENGINE_FAILURE` with phase `shutdown`); recovery from descriptor exhaustion without spinning; repeated STOP and `SIGINT`/`SIGTERM` with queued and stalled clients end to end; an unsafe IPC directory stopping startup cleanly.
+* `test_request_processing.py`: the Engine and clients as separate processes: `ape --ping` and `ape --echo`, invalid requests, queries that leave no trace on disk or in the audit history, a 30-second cycle interval that does not delay answers or STOP, no extra operating cycles from requests, idle CPU use, descriptor stability, cycles that keep their pace under request streams and stalled clients, and a burst of 40 simultaneous clients that are all answered.
 
 What the tests cannot show:
 
@@ -1833,7 +1834,15 @@ An exception in an operating-cycle phase ends that cycle: its remaining phases d
 |`SIGKILL`, power loss
 |No cleanup and no final audit events are possible. Recovery after such an interruption is outside this implementation.
 |(none)
+
+|Other signals, for example `SIGHUP` when a terminal is closed
+|Not supported: the default action ends the process without cleanup, like `SIGKILL`. The stale endpoint is replaced at the next start.
+|(set by the signal)
 |===
+
+Only `SIGINT` and `SIGTERM` are supported.
+The first stop reason wins: a repeated signal, or a signal after an operator STOP, changes nothing and is not recorded again.
+A shutdown that blocks (for example on storage) is not shortened by another signal; escalation is `SIGKILL`, or the service manager's stop timeout (Issue #9).
 
 Exit status 0 after a handled signal reports that the shutdown completed, not who requested it.
 Future service supervision shall not treat it as proof of operator authorization.
@@ -1849,11 +1858,12 @@ The `ape` client reports through its exit status:
 |2 |Usage or configuration error.
 |3 |The Engine is not reachable: the endpoint does not exist, or nothing is listening.
 |4 |Permission denied: by the operating system, or by the Engine (`peer_not_authorized`: the connecting Linux user is not authorized for administration).
-|5 |No answer within the timeout (`--timeout`, default 5 seconds).
-|6 |The connection failed or the answer was not understood.
+|5 |No answer within the timeout (`--timeout`, default 5 seconds). This includes an Engine that stayed busy: its connection queue was full until the timeout.
+|6 |The connection failed or the answer was not understood. This includes a connection that was closed without an answer (the request was *not acknowledged*, for example because the Engine was shutting down) and an `internal_error` answer (the Engine failed while handling the request and is stopping).
 |===
 
-`ape` never sends a process signal and never retries.
+`ape` never sends a process signal and never resends a request.
+It only retries *establishing the connection* while the Engine's connection queue is full; nothing has been sent at that point (see "Lifecycle and IPC Failure Handling").
 
 === Local Administrative IPC (Initial Implementation)
 
@@ -1884,7 +1894,7 @@ The production location (for example under `/run/aquaponics/`) is not decided he
 
 |Permissions
 |The endpoint's directory is created with mode `0700` and the socket with mode `0600`, independent of the process umask.
-An existing directory must be owned by the Engine's user.
+An existing directory is validated before use (see "Directory validation" below).
 
 |Creation
 |By the Engine at startup.
@@ -1892,7 +1902,7 @@ An existing directory must be owned by the Engine's user.
 |Cleanup
 |By the Engine during shutdown. The socket is removed only if it is still the one this Engine created.
 A socket left behind by `SIGKILL` or a crash is stale and is replaced at the next start.
-Something at the endpoint path that is not a socket is never removed.
+Something at the endpoint path that is not a socket, or a socket owned by another user, is never removed.
 
 |Restart behaviour
 |A restarted Engine acquires the endpoint without manual intervention.
@@ -1902,6 +1912,27 @@ Single instance:: The Engine holds an exclusive `flock` on `<endpoint>.lock` for
 A second Engine on the same endpoint fails to start (exit status 3) without disturbing the first.
 The kernel releases the lock when the process ends, including after a crash.
 The lock file is never deleted, because deleting lock files races with a starting Engine.
+The lock file is opened without following a symbolic link and must be a regular file owned by the Engine's user.
+
+Directory validation:: Only the endpoint's immediate directory is examined or changed, never its parents.
+It is opened without following a symbolic link, and every check, and the one permitted correction, is made on that open directory, so the directory checked is the directory changed.
++
+[cols="2,3",options="header"]
+|===
+|Condition |Behaviour
+
+|Missing |Created with mode `0700`. Parent directories that have to be created as well keep the default mode.
+|A symbolic link (even one pointing to a suitable directory) |Refused. The link and its target are left alone.
+|Not a directory |Refused.
+|Not owned by the Engine's user |Refused.
+|Writable by group or others |Refused: its content may already have been manipulated, so it is not repaired.
+|Only readable or searchable by group or others |Restricted to `0700`, with a `WARNING` naming the previous mode.
+|===
++
+A refusal stops startup: the Engine logs the reason, records `ENGINE_FAILURE` (phase `startup`) and exits with status 1.
+Nothing is created, removed or changed in the directory, and no lock is held.
+There is no fallback endpoint, because clients could not find it.
+Someone who can write to the directory's *parent* could still exchange the directory between the check and the creation of the socket; choosing a safe location is the operator's responsibility (the default, `$XDG_RUNTIME_DIR`, is a `0700` directory owned by the user).
 
 Access control::
 * Linux filesystem permissions decide who can connect. By default only the Engine's user (and root) can.
@@ -1948,16 +1979,18 @@ Error codes::
 |`invalid_arguments` |`args` is not an object, or its content is not valid for the operation (missing, unexpected or wrongly typed argument, text longer than 256 characters).
 |`unsupported_operation` |`op` is not one of the supported operations.
 |`peer_not_authorized` |The connecting Linux user is not authorized for administration.
+|`internal_error` |Not a refusal: handling the request failed inside the Engine, which is now stopping (see "Failure classification"). Fixed text; it never contains exception details.
 |===
 
-None of these stops the Engine. `ape` reports `peer_not_authorized` with exit status 4 and every other refusal with exit status 1.
+None of the refusals stops the Engine. `ape` reports `peer_not_authorized` with exit status 4, `internal_error` with exit status 6, and every other refusal with exit status 1.
 
 Bounds:: Per call the Engine accepts at most 8 connections, spends at most 0.2 s waiting for each request line, and at most 0.5 s in total.
 A call is made in every operating cycle, and again whenever the IPC socket reports a waiting client while the Engine idles.
 While idling, the time spent is also limited to the time left before the next cycle is due, and at least one waiting connection is handled per call.
 A stalled or malicious local client can therefore delay a cycle by a bounded time (about one connection's read and write deadlines, at most 0.4 s), never indefinitely.
-Clients beyond the listen backlog fail to connect rather than blocking the Engine.
-`ape` bounds the entire exchange with its timeout.
+The listen backlog is 8. Clients beyond it cannot connect until the Engine accepts queued ones; they never block the Engine.
+`ape` then retries connecting, and only connecting, until its timeout (see "Lifecycle and IPC Failure Handling").
+`ape` bounds the entire exchange with one overall deadline, its timeout.
 
 Diagnostic traces:: For every request that is read, the Engine logs (at `INFO`) that it was received, that it was processed, and that it was answered, naming the operation, the correlation identifier and the outcome.
 The identifier is client-supplied text and is logged quoted.
@@ -1968,7 +2001,7 @@ Every trace line also carries the Engine execution identifier and the cycle fiel
 Acknowledgement:: `shutdown_initiated` means the Engine has decided to shut down.
 A `ping` or `echo` answer reports a result; it does not mean anything was accepted for later execution.
 It does not mean the Engine process has exited.
-A repeated request during shutdown receives `shutdown_already_initiated`.
+A repeated request during shutdown receives `shutdown_already_initiated`, if it is still served (see "Shutdown servicing").
 The word "accepted" is deliberately not used: it is reserved for durable acceptance of operational commands (see "Engine Ingress").
 
 Manual verification of cross-user denial:: Automated tests cannot assume a second Linux account.
@@ -1981,6 +2014,77 @@ ape: permission denied for /path/to/engine.sock        (exit status 4)
 ----
 
 The Engine must keep running, and its lifecycle audit history must contain no `STOP_REQUEST_RECEIVED` for the attempt.
+
+=== Lifecycle and IPC Failure Handling
+
+This section defines how the Engine and `ape` behave when things go wrong around the local administrative IPC and the Engine lifecycle (Issue #8).
+
+Nominal responsiveness targets:: These are *nominal targets, not guarantees*.
+While writing the lifecycle audit history (`fsync`) and synchronous diagnostic logging can block (see "Diagnostic Logging (Initial Implementation)"), they are not hard real-time guarantees, and they are not documented or tested as such.
++
+* A STOP is acknowledged within about 1 second, provided the Engine's connection queue is not saturated.
+* After an acknowledged STOP or a handled `SIGINT`/`SIGTERM`, the process exits within about 2 seconds, whatever the cycle interval.
++
+The worst case follows from the existing bounds: the rest of a cycle's request servicing if the stop arrives during it (up to 0.9 s), the remaining placeholder phases (about 0 s), the final servicing pass (up to 0.25 s plus one connection's 0.4 s), and cleanup: about 1.6 s.
+A typical shutdown takes well under 0.1 s.
+The tests use 5 seconds as their tolerance.
+
+Shutdown servicing:: A controlled shutdown (operator STOP or handled signal) proceeds in this order:
++
+. `SHUTDOWN_INITIATED` is recorded.
+. *The endpoint is withdrawn.* The socket path is removed (only if it is still the socket this Engine created). A client that tries to connect from now on finds no endpoint (`ape` exit status 3). The listener and the instance lock stay held.
+. *One final servicing pass.* The clients already queued are served once, through the normal path with its usual limits (at most 8 connections, 0.2 s to read and 0.2 s to write each) and its authorization rules, for at most 0.25 s. It never waits for new clients. A STOP is answered `shutdown_already_initiated` and audited as `STOP_REQUEST_RECEIVED` with `shutdown_already_initiated: true`; that record appears between `SHUTDOWN_INITIATED` and `SHUTDOWN_COMPLETED`. A query is answered as usual.
+. The listener is closed, the lock released, cleanup completed and `SHUTDOWN_COMPLETED` recorded, as before.
++
+*No answer is promised to every queued client.* Clients beyond the pass's limits, or still queued when the listener closes, get no answer: their connection is reset. Shutdown is never extended to drain the queue.
+After an Engine failure there is no final pass: the shutdown goes straight to cleanup.
+An unexpected exception during the final pass is an Engine failure like any other: the client being served receives `internal_error` (best effort), `ENGINE_FAILURE` is recorded with phase `shutdown`, cleanup still runs exactly once, and the exit status is 1 (`SHUTDOWN_COMPLETED` keeps the reason that started the shutdown and records exit status 1).
++
+*Acknowledged and lost requests.* A STOP is acknowledged only if the client received an answer (`shutdown_initiated` or `shutdown_already_initiated`); the Engine then also has a matching `STOP_REQUEST_RECEIVED` record. A request that got no answer was *not acknowledged* and must be treated as lost: the client cannot tell whether it was read.
++
+[cols="3,3",options="header"]
+|===
+|Engine state when the client connects |`ape` result
+
+|Running |Normal answer (exit status 0, 1 or 4).
+|Running, connection queue full |Retries connecting until its timeout, then exit status 5, "the Engine is busy".
+|Shutting down; the client was already queued and is served in the final pass |STOP: exit status 0, "already initiated". Queries: answered as usual.
+|Shutting down; the client was queued but not served |Exit status 6, "the request was not acknowledged".
+|Shutting down; the endpoint was already withdrawn |Exit status 3, "no Engine is listening" (the process may still be finishing cleanup).
+|Exited, or killed (a stale socket remains) |Exit status 3.
+|===
+
+Failure classification:: Three classes, kept strictly apart:
++
+. *Per-connection failures*: logged as a `WARNING`; that connection is closed and the Engine continues. They are not audited, like a client disconnect. Only these errors, raised by an operation on the accepted client connection itself (`recv`, `sendall`, `settimeout`, `getsockopt` or `close`), belong here:
+** the client went away: `ECONNRESET`, `EPIPE`, `ECONNABORTED`, `ENOTCONN`;
+** the connection's own read or write deadline expired (`TimeoutError`);
+** a transient shortage of kernel resources on that socket: `ENOBUFS`, `ENOMEM`, `EAGAIN`/`EWOULDBLOCK`.
++
+Any other `OSError`, even from those operations (for example `EBADF`, `EINVAL`, `ENOTSOCK`), indicates a defect and is *not* contained. The classification is one named constant in `local_ingress.py`, checked by the tests.
+. *Protocol refusals*: answered with their error code and logged; the Engine continues (see "Local Administrative IPC (Initial Implementation)").
+. *Engine failures*: everything else, including any exception from the request handler (also an `OSError` raised by Engine code), any decoding error other than a protocol error, and any exception from the operating-cycle phases. The Engine stops (fail-stop): `ENGINE_FAILURE` is recorded, cleanup is attempted once, and the exit status is 1. Nothing about this has changed.
++
+*`internal_error` answer.* When the request handler raises, the client is first sent one fixed answer, as a courtesy: `{"ok": false, "error": "internal_error", "message": "the Engine encountered an internal error and is stopping"}`, with the request's `id` if it had one.
+It is a single attempt within the usual 0.2 s write deadline, it never contains the exception's type, text or traceback, and a failure to send it never replaces the original exception, which then takes the fail-stop path unchanged.
+The exception details go only to the diagnostic log (as an `ERROR` with traceback) and to the `ENGINE_FAILURE` record (exception type and message), as before.
+Interruptions (`KeyboardInterrupt`, `SystemExit`) are never turned into an answer.
+`accept()` failures keep their existing handling: no further connections in that call, the 0.25 s idle backoff, and repeat suppression by category.
+
+Connecting while the Engine is busy:: A Unix socket does not make a client wait for room in a full connection queue: connecting fails at once (`EAGAIN`).
+`ape` treats this as "the Engine is alive but busy" and retries *connecting only*, with a short backoff (10 ms, doubling up to 100 ms), until its timeout; then it exits with status 5.
+Nothing has been sent at that point, so this cannot duplicate a request.
+Once connected, the request is sent exactly once and is never resent, whatever happens afterwards.
+One overall deadline, the `--timeout`, covers connecting, sending and waiting for the answer.
+A missing endpoint or nothing listening is reported at once with exit status 3, a permission problem with exit status 4; neither is retried.
+
+Duplicate requests:: The correlation identifier is not an idempotency key, and the Engine does not deduplicate requests.
+Queries (`ping`, `echo`) are safe to repeat.
+A STOP repeated within one Engine execution is idempotent: it is answered `shutdown_already_initiated` and audited each time, without a second shutdown.
+A STOP sent after the Engine has been restarted is a new STOP for the new execution; stopping only a specific execution is left to Issue #9, together with automatic restarts.
+
+Descriptor exhaustion:: If the Engine runs out of file descriptors (or kernel memory) while accepting a connection, it stops accepting for that call, ignores the socket for 0.25 s while idle so that it cannot spin, and logs the condition under its repeat-suppression category.
+Waiting clients stay queued and are served automatically once the condition clears.
 
 === Diagnostic Logging (Initial Implementation)
 

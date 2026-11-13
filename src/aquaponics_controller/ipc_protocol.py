@@ -50,6 +50,10 @@ ERROR_UNSUPPORTED_OPERATION = "unsupported_operation"
 ERROR_PEER_NOT_AUTHORIZED = "peer_not_authorized"
 ERROR_INVALID_CORRELATION_ID = "invalid_correlation_id"
 ERROR_INVALID_ARGUMENTS = "invalid_arguments"
+# Best-effort notice that handling this request failed inside the Engine, which is now stopping
+# (fail-stop). Fixed text: it never carries exception details.
+ERROR_INTERNAL = "internal_error"
+INTERNAL_ERROR_MESSAGE = "the Engine encountered an internal error and is stopping"
 
 # Response statuses.
 STATUS_SHUTDOWN_INITIATED = "shutdown_initiated"

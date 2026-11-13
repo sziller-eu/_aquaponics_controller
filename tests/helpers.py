@@ -18,6 +18,10 @@ SOURCE_DIRECTORY = str(Path(aquaponics_controller.__file__).resolve().parent.par
 
 PROCESS_TIMEOUT_SECONDS = 15
 
+# Tolerance for the NOMINAL responsiveness targets (an acknowledged STOP or a handled signal ends the
+# process within about 2 s). Generous for slow CI machines; it is a test tolerance, not a guarantee.
+SHUTDOWN_TOLERANCE_SECONDS = 5.0
+
 
 def child_environment() -> dict:
     environment = dict(os.environ)

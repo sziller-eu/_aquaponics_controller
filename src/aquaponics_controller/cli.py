@@ -11,8 +11,10 @@ by the running Engine from its own state; this client only sends the request and
 shows the answer. Neither query changes anything.
 
 The CLI never starts an Engine and never signals the Engine process. The client never
-retries: a repeated request must be an explicit decision. Every wait is bounded by
-``--timeout``.
+resends a request: a repeated request must be an explicit decision. It only retries
+*establishing the connection* while the Engine's connection queue is full (nothing has
+been sent at that point). One overall deadline, ``--timeout``, bounds everything:
+connecting, sending and waiting for the answer.
 
 Exit status:
     0  the Engine answered successfully (for -x: confirmed that shutdown was initiated)
@@ -20,11 +22,13 @@ Exit status:
     2  usage error
     3  the Engine is not reachable (no endpoint, or nothing listening)
     4  permission denied: by the operating system, or by the Engine (peer_not_authorized)
-    5  timed out
-    6  the connection failed or the answer was not understood
+    5  timed out (including: the Engine stayed busy, its connection queue full, until the timeout)
+    6  the connection failed or the answer was not understood; also: connected but no answer
+       (the request was not acknowledged), or the Engine reported an internal error
 """
 
 import argparse
+import errno
 import socket
 import sys
 import time
@@ -33,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .ipc_protocol import (
+    ERROR_INTERNAL,
     ERROR_MALFORMED_REQUEST,
     ERROR_PEER_NOT_AUTHORIZED,
     MAX_MESSAGE_BYTES,
@@ -57,6 +62,10 @@ EXIT_COMMUNICATION_FAILURE = 6
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 
+# While the Engine's listen backlog is full, connecting is retried (and only connecting) with this backoff.
+CONNECT_RETRY_INITIAL_DELAY_SECONDS = 0.01
+CONNECT_RETRY_MAX_DELAY_SECONDS = 0.1
+
 
 class ClientError(Exception):
     """A failure to complete the exchange with the Engine, with the exit status to report."""
@@ -72,30 +81,86 @@ def send_request(
     """Submit one request and return the Engine's response. Raise ClientError on failure.
 
     The request carries a fresh correlation identifier, and an answer that does not carry the same
-    identifier is rejected. ``timeout_seconds`` bounds the whole exchange, so the call cannot hang.
+    identifier is rejected. ``timeout_seconds`` is one overall deadline for connecting, sending and
+    receiving, so the call cannot hang. The request is sent at most once: only connecting is retried,
+    and only while the Engine's connection queue is full.
     """
     correlation_id = uuid.uuid4().hex
     request = encode_request(operation, datetime.now(timezone.utc), correlation_id=correlation_id, arguments=arguments)
     if len(request) > MAX_MESSAGE_BYTES:  # transport frame limit only; what the text means is the Engine's business
         raise ClientError(EXIT_USAGE, f"the request would exceed the {MAX_MESSAGE_BYTES}-byte protocol limit")
+    deadline = time.monotonic() + timeout_seconds
+
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(timeout_seconds)
-            connection.connect(str(endpoint))
-            connection.sendall(request)
-            response = decode_response(_read_response_line(connection, timeout_seconds))
-        _check_correlation(response, correlation_id)
-        return response
-    except TimeoutError:
-        raise ClientError(EXIT_TIMEOUT, f"no answer from the Engine within {timeout_seconds:g} s") from None
+        connection = _connect(endpoint, deadline, timeout_seconds)
     except PermissionError:
         raise ClientError(EXIT_PERMISSION_DENIED, f"permission denied for {endpoint}") from None
     except (FileNotFoundError, ConnectionRefusedError):
         raise ClientError(EXIT_UNREACHABLE, f"no Engine is listening at {endpoint}") from None
+    except TimeoutError:
+        raise ClientError(EXIT_TIMEOUT, f"no answer from the Engine within {timeout_seconds:g} s") from None
+    except OSError as exc:
+        raise ClientError(EXIT_COMMUNICATION_FAILURE, f"could not connect to the Engine: {exc}") from None
+
+    # From here on the request may have reached the Engine: nothing is ever retried or resent.
+    try:
+        with connection:
+            _set_remaining_timeout(connection, deadline)
+            connection.sendall(request)
+            response = decode_response(_read_response_line(connection, deadline))
+        _check_correlation(response, correlation_id)
+        return response
+    except TimeoutError:
+        raise ClientError(EXIT_TIMEOUT, f"no answer from the Engine within {timeout_seconds:g} s") from None
+    except ConnectionError:
+        raise ClientError(
+            EXIT_COMMUNICATION_FAILURE,
+            "the Engine closed the connection without answering: the request was not acknowledged "
+            "(the Engine may be shutting down)",
+        ) from None
     except ProtocolError as exc:
         raise ClientError(EXIT_COMMUNICATION_FAILURE, f"unintelligible answer from the Engine: {exc.message}") from None
     except OSError as exc:
         raise ClientError(EXIT_COMMUNICATION_FAILURE, f"communication with the Engine failed: {exc}") from None
+
+
+def _connect(endpoint: Path, deadline: float, timeout_seconds: float) -> socket.socket:
+    """Connect before ``deadline``. Retry ONLY while the Engine's listen backlog is full (EAGAIN).
+
+    A Unix socket with a timeout does not wait for room in a full backlog: ``connect`` fails at once
+    with EAGAIN. That means "the Engine is alive but busy", so connecting is retried with a short
+    backoff until the deadline. Nothing has been sent yet, so this cannot duplicate a request. Any
+    other failure (no endpoint, nothing listening, permission) is raised immediately.
+    """
+    delay = CONNECT_RETRY_INITIAL_DELAY_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ClientError(
+                EXIT_TIMEOUT,
+                f"the Engine is busy: its connection queue stayed full for {timeout_seconds:g} s",
+            )
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            connection.settimeout(remaining)
+            connection.connect(str(endpoint))
+            return connection
+        except BlockingIOError as exc:
+            connection.close()
+            if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise
+        except BaseException:
+            connection.close()
+            raise
+        time.sleep(max(0.0, min(delay, deadline - time.monotonic())))
+        delay = min(delay * 2, CONNECT_RETRY_MAX_DELAY_SECONDS)
+
+
+def _set_remaining_timeout(connection: socket.socket, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    connection.settimeout(remaining)
 
 
 def _check_correlation(response: AdministrativeResponse, sent_id: str) -> None:
@@ -105,14 +170,10 @@ def _check_correlation(response: AdministrativeResponse, sent_id: str) -> None:
     raise ProtocolError(ERROR_MALFORMED_REQUEST, "the answer does not carry this request's correlation identifier")
 
 
-def _read_response_line(connection: socket.socket, timeout_seconds: float) -> bytes:
-    deadline = time.monotonic() + timeout_seconds
+def _read_response_line(connection: socket.socket, deadline: float) -> bytes:
     received = b""
     while b"\n" not in received:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError
-        connection.settimeout(remaining)
+        _set_remaining_timeout(connection, deadline)
         chunk = connection.recv(MAX_MESSAGE_BYTES + 1 - len(received))
         if not chunk:
             raise ConnectionResetError("the Engine closed the connection without answering")
@@ -157,6 +218,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ape: {exc}", file=sys.stderr)
         return exc.exit_status
 
+    if not response.ok and response.error_code == ERROR_INTERNAL:
+        # Not a refusal: handling the request failed inside the Engine, which is now stopping.
+        print("ape: the Engine reported an internal error and is stopping", file=sys.stderr)
+        return EXIT_COMMUNICATION_FAILURE
     if not response.ok:
         print(f"ape: the Engine refused the request: {response.error_code}: {response.message}", file=sys.stderr)
         return EXIT_PERMISSION_DENIED if response.error_code == ERROR_PEER_NOT_AUTHORIZED else EXIT_REFUSED

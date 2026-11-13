@@ -337,18 +337,33 @@ def test_the_cycles_keep_their_pace_while_the_engine_answers_a_stream_of_request
 
 
 def test_a_burst_of_simultaneous_clients_is_served_and_the_engine_stays_healthy(engine):
-    results = []
+    """40 clients at once: more than the 8 served per call and more than the backlog admits.
 
-    def client():
-        results.append(ask(engine.endpoint, "echo", arguments={"text": "burst"})["ok"])
+    Clients use the same request function as ``ape``. One whose connection finds the queue full
+    retries connecting (only connecting, nothing was sent) within its timeout, so every one of them
+    is answered. Every outcome is recorded; a thread never ends with an unhandled exception.
+    """
+    outcomes = []
 
-    threads = [threading.Thread(target=client) for _ in range(40)]  # more than the 8 per call, and the backlog
+    def client(number):
+        try:
+            response = cli.send_request(engine.endpoint, "echo", 5.0, {"text": f"burst {number}"})
+            outcomes.append(("answered", response.ok, response.result))
+        except cli.ClientError as exc:
+            outcomes.append(("failed", exc.exit_status, str(exc)))
+        except Exception as exc:  # noqa: BLE001 - recorded, so that the assertion below reports it
+            outcomes.append(("exception", type(exc).__name__, str(exc)))
+
+    threads = [threading.Thread(target=client, args=(number,)) for number in range(40)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=15)
 
-    assert len(results) >= 8  # at least some were served; the rest may be turned away by the bounded backlog
+    assert len(outcomes) == 40
+    assert sorted(outcomes, key=str) == sorted(
+        (("answered", True, {"text": f"burst {number}"}) for number in range(40)), key=str
+    )
     assert engine.process.poll() is None
     assert ping(engine.endpoint)["reply"] == "pong"
 

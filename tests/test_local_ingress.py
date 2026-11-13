@@ -349,3 +349,140 @@ def test_a_hostile_identifier_cannot_forge_log_lines(ingress, endpoint, caplog):
 
     assert all(not line.startswith("INFO fake") for line in caplog.text.splitlines())
     assert "\\n" in caplog.text  # quoted, not interpreted
+
+
+# ---------------------------------------------------------------- IPC directory validation (Issue #8)
+
+
+def mode_of(path) -> int:
+    return stat.S_IMODE(path.lstat().st_mode)
+
+
+def assert_refused(endpoint, reason):
+    with pytest.raises(IngressUnavailableError, match=reason):
+        LocalAdministrativeIngress(endpoint).open()
+
+
+def test_a_missing_directory_is_created_owner_only_and_its_parent_keeps_its_mode(short_directory):
+    parent_mode = mode_of(short_directory)
+    endpoint = short_directory / "ipc" / "engine.sock"
+
+    ingress = LocalAdministrativeIngress(endpoint)
+    ingress.open()
+    ingress.close()
+
+    assert mode_of(endpoint.parent) == 0o700
+    assert mode_of(short_directory) == parent_mode
+
+
+def test_a_directory_that_is_a_symbolic_link_is_refused_and_its_target_left_alone(short_directory):
+    target = short_directory / "elsewhere"
+    target.mkdir(mode=0o700)
+    (short_directory / "ipc").symlink_to(target)
+
+    assert_refused(short_directory / "ipc" / "engine.sock", "symbolic link")
+
+    assert list(target.iterdir()) == [] and mode_of(target) == 0o700
+
+
+def test_a_dangling_symbolic_link_is_refused_and_nothing_is_created_through_it(short_directory):
+    target = short_directory / "does-not-exist"
+    (short_directory / "ipc").symlink_to(target)
+
+    assert_refused(short_directory / "ipc" / "engine.sock", "symbolic link")
+
+    assert not target.exists()
+
+
+def test_a_path_that_is_not_a_directory_is_refused(short_directory):
+    (short_directory / "ipc").write_text("a file")
+
+    assert_refused(short_directory / "ipc" / "engine.sock", "not a directory")
+
+    assert (short_directory / "ipc").read_text() == "a file"
+
+
+def test_a_directory_owned_by_another_user_is_refused(short_directory, monkeypatch):
+    directory = short_directory / "ipc"
+    directory.mkdir(mode=0o700)
+    real_uid = os.geteuid()
+    monkeypatch.setattr(os, "geteuid", lambda: real_uid + 1)  # as if the directory belonged to someone else
+
+    assert_refused(directory / "engine.sock", "not owned")
+
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.parametrize("unsafe_mode", [0o770, 0o730, 0o707, 0o777, 0o1777])
+def test_a_directory_writable_by_others_is_refused_unchanged_and_nothing_is_created_in_it(short_directory, unsafe_mode):
+    directory = short_directory / "ipc"
+    directory.mkdir()
+    directory.chmod(unsafe_mode)
+
+    assert_refused(directory / "engine.sock", "writable by group or others")
+
+    assert stat.S_IMODE(directory.stat().st_mode) == unsafe_mode
+    assert list(directory.iterdir()) == []  # no lock file, no socket: refused before anything is created
+
+
+@pytest.mark.parametrize("readable_mode", [0o750, 0o755, 0o711, 0o705])
+def test_a_directory_only_readable_by_others_is_restricted_with_a_warning(short_directory, caplog, readable_mode):
+    directory = short_directory / "ipc"
+    directory.mkdir()
+    directory.chmod(readable_mode)
+    parent_mode = mode_of(short_directory)
+
+    ingress = LocalAdministrativeIngress(directory / "engine.sock")
+    with caplog.at_level("WARNING"):
+        ingress.open()
+    ingress.close()
+
+    assert mode_of(directory) == 0o700
+    assert f"had permissions {readable_mode:04o}; restricted to 0700" in caplog.text
+    assert mode_of(short_directory) == parent_mode  # never a parent directory
+
+
+def test_a_lock_file_that_is_a_symbolic_link_is_refused_and_its_target_left_alone(endpoint, short_directory):
+    endpoint.parent.mkdir(mode=0o700)
+    target = short_directory / "someone-elses-file"
+    target.write_text("do not touch\n")
+    endpoint.with_name(endpoint.name + ".lock").symlink_to(target)
+
+    assert_refused(endpoint, "symbolic link")
+
+    assert target.read_text() == "do not touch\n"
+    assert not endpoint.exists()
+
+
+def test_a_lock_file_that_is_a_named_pipe_is_refused_without_blocking(endpoint):
+    endpoint.parent.mkdir(mode=0o700)
+    os.mkfifo(endpoint.with_name(endpoint.name + ".lock"), 0o600)
+
+    started = time.monotonic()
+    assert_refused(endpoint, "not a regular file")
+
+    assert time.monotonic() - started < 1.0
+    assert not endpoint.exists()
+
+
+def test_a_stale_socket_owned_by_another_user_is_not_removed(endpoint, monkeypatch):
+    endpoint.parent.mkdir(mode=0o700)
+    left_behind = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    left_behind.bind(str(endpoint))
+    left_behind.close()
+    real_lstat = type(endpoint).lstat
+
+    def lstat_as_if_foreign(path):
+        status = real_lstat(path)
+        if path == endpoint:
+            fields = list(status[:10])
+            fields[4] = status.st_uid + 1  # st_uid
+            return os.stat_result(fields)
+        return status
+
+    monkeypatch.setattr(type(endpoint), "lstat", lstat_as_if_foreign)
+
+    assert_refused(endpoint, "owned by another user")
+
+    monkeypatch.undo()
+    assert stat.S_ISSOCK(endpoint.lstat().st_mode)  # still there

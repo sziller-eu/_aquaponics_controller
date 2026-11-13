@@ -16,7 +16,7 @@ Responsibilities are kept apart:
 - ``Engine._run_phase``           runs one phase: records which phase is running, measures its duration.
 - ``Engine._wait_for_next_cycle`` idle until the next cycle is due, answering requests meanwhile.
 - ``Engine._handle_administrative_request``  the one entry point for every request: authorize, dispatch.
-- ``Engine._shutdown``            cleanup, attempted once.
+- ``Engine._shutdown``            final bounded servicing of queued requests (controlled shutdown only), cleanup, attempted once.
 
 Execution is sequential: no threads, no multiprocessing, no asynchronous framework.
 Signal handlers (installed by the entry point) only set a stop flag and wake the
@@ -59,6 +59,11 @@ logger = logging.getLogger(__name__)
 # file descriptors) the listening socket is ignored for this long. Without it a socket that stays readable
 # would make the idle wait spin at full CPU. Requests are delayed by at most this much in that fault case.
 INGRESS_NO_PROGRESS_BACKOFF_SECONDS = 0.25
+
+# Controlled shutdown: after the endpoint is withdrawn, clients already queued are served once, for at most
+# this long (plus one connection's read and write deadlines), within the usual ingress limits. Shutdown is
+# never extended to drain the backlog: whoever is still queued afterwards gets no answer.
+SHUTDOWN_SERVICING_TIME_LIMIT_SECONDS = 0.25
 
 
 class RequestClass(enum.Enum):
@@ -460,7 +465,7 @@ class Engine:
     # ------------------------------------------------------------------ failure and shutdown
 
     def _record_failure(self, exc: Exception) -> None:
-        phase = "startup" if self._state is LifecycleState.STARTING else "operation"
+        phase = {LifecycleState.STARTING: "startup", LifecycleState.STOPPING: "shutdown"}.get(self._state, "operation")
         context = {"phase": phase, "message": str(exc)}
         if self._current_phase is not None:
             # The failure happened inside an operating-cycle phase: name the phase and the cycle. The
@@ -493,10 +498,13 @@ class Engine:
         self._log_shutdown_cause(reason, context)
         self._audit.record(LifecycleEvent.SHUTDOWN_INITIATED, reason=reason.value, requester=requester, context=context)
 
+        if reason is not ShutdownReason.FAILURE:
+            self._serve_queued_requests_once()
         for report in self._phase_overrun_reports.values():
             report.flush()  # nothing suppressed goes unmentioned
         cleanup_succeeded = self._clean_up()
-        self._exit_status = self._decide_exit_status(reason, cleanup_succeeded)
+        # A failure during the final servicing pass makes the outcome a failure (it outranks the stop).
+        self._exit_status = self._decide_exit_status(self._stop_reason or reason, cleanup_succeeded)
         self._state = LifecycleState.STOPPED
 
         self._audit.record(
@@ -512,6 +520,32 @@ class Engine:
         log_handler_failure_counts()
         logger.info("Engine shutdown completed (exit status %d)", int(self._exit_status))
         return self._exit_status
+
+    def _serve_queued_requests_once(self) -> None:
+        """Controlled shutdown: withdraw the endpoint, then serve the clients already queued, once and bounded.
+
+        New clients can no longer connect (they find no endpoint). Those already queued are served
+        through the normal path, with its limits and authorization, for at most
+        SHUTDOWN_SERVICING_TIME_LIMIT_SECONDS: a STOP is answered "already initiated" (and audited),
+        a query is answered. Nothing is promised beyond that; clients still queued afterwards get no
+        answer when the listener closes. Skipped after an Engine failure.
+
+        An unexpected exception here is an Engine failure like any other (fail-stop): recorded as
+        ENGINE_FAILURE with phase "shutdown", and the shutdown then continues with cleanup.
+        """
+        try:
+            try:
+                self._ingress.withdraw_endpoint()
+            except OSError as exc:  # not hidden: cleanup tries again and reports a failure as a cleanup failure
+                logger.warning("withdrawing the IPC endpoint failed (%s); it is removed again during cleanup", exc)
+            handled = self._ingress.service_pending_requests(
+                self._handle_administrative_request, SHUTDOWN_SERVICING_TIME_LIMIT_SECONDS
+            )
+        except Exception as exc:  # the fail-stop path, not containment: recorded as ENGINE_FAILURE, exit status 1
+            self._record_failure(exc)
+            return
+        if handled:
+            logger.info("shutdown: %d queued IPC connection(s) served before the endpoint closes", handled)
 
     @staticmethod
     def _log_shutdown_cause(reason: ShutdownReason, context: dict) -> None:

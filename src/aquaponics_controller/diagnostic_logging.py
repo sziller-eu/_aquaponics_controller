@@ -31,9 +31,11 @@ Signal handlers must never log: logging takes locks that are not safe to re-ente
 a signal handler.
 """
 
+import errno
 import logging
 import logging.handlers
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -154,10 +156,13 @@ class BoundedRotatingFileHandler(FailureTolerantHandlerMixin, logging.handlers.R
     - only a single record larger than the limit can make a file exceed it (written to an empty file);
     - if rotation fails, the record is dropped (reported by ``handleError``) rather than appended
       beyond the limit;
-    - the file is created with mode 0600.
+    - the file is opened safely (see ``open_log_descriptor``), also after every rotation: never
+      through a symbolic link, only if it is a regular file, and only with mode 0600.
     """
 
     def __init__(self, path: Path) -> None:
+        # Set by _open when an existing file's permissions had to be restricted (reported by configure_logging).
+        self.permissions_corrected_from: int | None = None
         super().__init__(
             path,
             maxBytes=LOG_FILE_MAX_BYTES,
@@ -167,8 +172,16 @@ class BoundedRotatingFileHandler(FailureTolerantHandlerMixin, logging.handlers.R
         )
 
     def _open(self):
-        descriptor = os.open(self.baseFilename, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o600)
-        return open(descriptor, "a", encoding=self.encoding, errors=self.errors)
+        # Used for the first open and after every rotation. It must not log (it runs inside emit):
+        # problems are raised and end up in handleError, so the record is dropped and counted.
+        descriptor, corrected_from = open_log_descriptor(self.baseFilename)
+        if corrected_from is not None:
+            self.permissions_corrected_from = corrected_from
+        try:
+            return open(descriptor, "a", encoding=self.encoding, errors=self.errors)
+        except BaseException:
+            os.close(descriptor)
+            raise
 
     def shouldRollover(self, record: logging.LogRecord) -> bool:  # noqa: N802 - logging's API name
         if self.stream is None:
@@ -188,8 +201,58 @@ class BoundedRotatingFileHandler(FailureTolerantHandlerMixin, logging.handlers.R
             self.handleError(record)
 
 
+def open_log_descriptor(path: str) -> tuple[int, int | None]:
+    """Open the log file for appending, safely. Return the descriptor and, if they had to be
+    restricted, the file's previous permission bits. Raise OSError if the file is not acceptable.
+
+    1. Never through a symbolic link (O_NOFOLLOW on the file itself; the directories on the
+       path are the operator's choice).
+    2. Without blocking (O_NONBLOCK): opening a named pipe that has no reader would otherwise
+       wait forever. Without a reader it fails at once; with one it is refused by step 3.
+    3. Only a regular file with a single name: named pipes, devices, sockets, directories and
+       hard-linked files (another name refers to the same file) are refused, before anything changes.
+    4. Only with mode 0600. A more permissive existing file is restricted through the opened
+       descriptor (so exactly the checked file is changed); if that is not permitted, it is refused.
+
+    Nothing else is touched: no directory permissions, no other files.
+    """
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise OSError(errno.ELOOP, "the log file path is a symbolic link, which is not followed") from None
+        if exc.errno == errno.ENXIO:
+            raise OSError(errno.ENXIO, "the log file path is not a regular file") from None
+        raise
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise OSError(errno.EINVAL, "the log file path is not a regular file")
+        if status.st_nlink > 1:
+            # Another name refers to the same file: writing (or restricting permissions) would change it too.
+            raise OSError(errno.EMLINK, f"the log file has {status.st_nlink} hard links; only a single link is accepted")
+        corrected_from = None
+        mode = stat.S_IMODE(status.st_mode)
+        if mode != 0o600:
+            refusal = f"the log file's permissions ({mode:04o}) cannot be restricted to 0600"
+            try:
+                os.fchmod(descriptor, 0o600)
+            except OSError as exc:
+                raise OSError(exc.errno, refusal) from None
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
+                raise OSError(errno.EPERM, refusal)
+            corrected_from = mode
+        os.set_blocking(descriptor, True)  # O_NONBLOCK was only for the open
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, corrected_from
+
+
 def open_log_file(path: Path) -> BoundedRotatingFileHandler:
-    """Create the directory (0700) if needed and open the log file (0600). Raise OSError if impossible."""
+    """Create the directory (0700) if needed and open the log file safely (see ``open_log_descriptor``).
+    Raise OSError if impossible. An existing directory, and every parent directory, is left as it is."""
     directory = path.parent
     if not directory.exists():
         directory.mkdir(mode=0o700, parents=True)
@@ -218,6 +281,7 @@ def configure_logging(level_name: str, log_file: str | Path | None = None, execu
     handlers: list[logging.Handler] = [stderr_handler]
 
     file_problem: str | None = None
+    file_handler: BoundedRotatingFileHandler | None = None
     if log_file:
         try:
             file_handler = open_log_file(Path(log_file))
@@ -235,6 +299,12 @@ def configure_logging(level_name: str, log_file: str | Path | None = None, execu
 
     if file_problem is not None:
         logger.warning("diagnostic log file %s cannot be used (%s); logging to standard error only", log_file, file_problem)
+    elif file_handler is not None and file_handler.permissions_corrected_from is not None:
+        logger.warning(
+            "diagnostic log file %s had permissions %04o; restricted to 0600",
+            log_file,
+            file_handler.permissions_corrected_from,
+        )
 
 
 def log_handler_failure_counts() -> None:

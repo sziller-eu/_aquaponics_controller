@@ -540,6 +540,172 @@ def test_an_unusable_log_file_is_reported_and_logging_continues_on_stderr(short_
     assert [h.get_name() for h in logging.getLogger().handlers] == ["stderr"]
 
 
+# ---------------------------------------------------------------- unsafe log file destinations
+
+
+def assert_stderr_only_with_warning(capfd, reason):
+    logging.getLogger("aquaponics_controller.engine").info("still logging")
+    error_output = capfd.readouterr().err
+    assert "diagnostic log file" in error_output and "logging to standard error only" in error_output
+    assert reason in error_output
+    assert "still logging" in error_output
+    assert [h.get_name() for h in logging.getLogger().handlers] == ["stderr"]
+
+
+def test_an_existing_permissive_log_file_is_restricted_to_0600_with_a_warning_and_kept(short_directory, capfd):
+    path = short_directory / "engine.log"
+    path.write_text("earlier line\n")
+    path.chmod(0o644)
+
+    configure_logging("INFO", path, "a" * 32)
+    logging.getLogger("aquaponics_controller.engine").info("appended")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    lines = path.read_text().splitlines()
+    assert lines[0] == "earlier line" and lines[-1].endswith(" appended")  # appended, not replaced
+    assert "had permissions 0644; restricted to 0600" in capfd.readouterr().err
+    assert [h.get_name() for h in logging.getLogger().handlers] == ["stderr", "log-file"]
+
+
+def test_a_permissive_log_file_that_cannot_be_restricted_is_not_used(short_directory, capfd, monkeypatch):
+    path = short_directory / "engine.log"
+    path.write_text("earlier line\n")
+    path.chmod(0o644)
+
+    def refuse(descriptor, mode):
+        raise PermissionError(errno.EPERM, "Operation not permitted")  # for example: owned by another user
+
+    monkeypatch.setattr(diagnostic_logging.os, "fchmod", refuse)
+    configure_logging("INFO", path, "a" * 32)
+
+    assert_stderr_only_with_warning(capfd, "cannot be restricted to 0600")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644 and path.read_text() == "earlier line\n"
+
+
+def test_a_log_file_path_that_is_a_symbolic_link_is_not_followed(short_directory, capfd):
+    target = short_directory / "someone-elses-file"
+    target.write_text("do not touch\n")
+    target.chmod(0o644)
+    link = short_directory / "engine.log"
+    link.symlink_to(target)
+
+    configure_logging("INFO", link, "a" * 32)
+
+    assert_stderr_only_with_warning(capfd, "symbolic link")
+    assert target.read_text() == "do not touch\n" and stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert link.is_symlink()
+
+
+def test_a_symbolic_link_planted_during_rotation_is_not_followed(short_directory, small_files, capfd):
+    target = short_directory / "someone-elses-file"
+    target.write_text("do not touch\n")
+    path = short_directory / "engine.log"
+    handler = file_handler(path)
+
+    def rotate_then_plant_a_link(source, destination):
+        os.rename(source, destination)
+        path.symlink_to(target)
+
+    handler.rotate = rotate_then_plant_a_link
+    for number in range(40):
+        handler.handle(make_record("%04d %s", number, "y" * 120))
+    handler.close()
+
+    assert target.read_text() == "do not touch\n"
+    assert handler.failure_count > 0  # records are dropped and counted, nothing raised
+    assert capfd.readouterr().err.count("diagnostic log handler") == 1
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o644])
+def test_a_hard_linked_log_file_is_refused_and_neither_name_changes(short_directory, capfd, mode):
+    other_name = short_directory / "someone-elses-file"
+    other_name.write_text("do not touch\n")
+    other_name.chmod(mode)  # 0644: refused before its permissions would have been restricted
+    path = short_directory / "engine.log"
+    os.link(other_name, path)
+
+    configure_logging("INFO", path, "a" * 32)
+
+    assert_stderr_only_with_warning(capfd, "hard links")
+    for name in (path, other_name):
+        assert name.read_text() == "do not touch\n"
+        assert stat.S_IMODE(name.stat().st_mode) == mode
+    assert path.stat().st_nlink == 2 and os.path.samefile(path, other_name)
+
+
+def test_a_hard_link_planted_during_rotation_is_refused(short_directory, small_files, capfd):
+    other_name = short_directory / "someone-elses-file"
+    other_name.write_text("do not touch\n")
+    path = short_directory / "engine.log"
+    handler = file_handler(path)
+
+    def rotate_then_plant_a_hard_link(source, destination):
+        os.rename(source, destination)
+        os.link(other_name, path)
+
+    handler.rotate = rotate_then_plant_a_hard_link
+    for number in range(40):
+        handler.handle(make_record("%04d %s", number, "y" * 120))
+    handler.close()
+
+    assert other_name.read_text() == "do not touch\n" and path.read_text() == "do not touch\n"
+    assert handler.failure_count > 0
+    assert capfd.readouterr().err.count("diagnostic log handler") == 1
+
+
+def test_a_named_pipe_without_a_reader_is_refused_without_blocking(short_directory, capfd):
+    pipe = short_directory / "engine.log"
+    os.mkfifo(pipe, 0o600)
+
+    worker = threading.Thread(target=configure_logging, args=("INFO", pipe, "a" * 32), daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive(), "opening the log file blocked"
+    assert_stderr_only_with_warning(capfd, "not a regular file")
+
+
+def test_a_named_pipe_with_a_reader_is_refused_and_receives_nothing(short_directory, capfd):
+    pipe = short_directory / "engine.log"
+    os.mkfifo(pipe, 0o600)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        configure_logging("INFO", pipe, "a" * 32)
+        assert_stderr_only_with_warning(capfd, "not a regular file")
+        assert os.read(reader, 100) == b""  # nothing was written; the refused writer is already closed
+    finally:
+        os.close(reader)
+
+
+def test_a_device_file_is_refused(capfd):
+    configure_logging("INFO", "/dev/null", "a" * 32)
+    assert_stderr_only_with_warning(capfd, "not a regular file")
+
+
+def test_a_directory_as_the_log_file_is_refused(short_directory, capfd):
+    configure_logging("INFO", short_directory, "a" * 32)
+    assert_stderr_only_with_warning(capfd, "logging to standard error only")
+
+
+def test_an_existing_directory_keeps_its_permissions(short_directory):
+    directory = short_directory / "shared"
+    directory.mkdir()
+    directory.chmod(0o755)
+    neighbour = directory / "unrelated.txt"
+    neighbour.write_text("unrelated\n")
+    parent_mode = stat.S_IMODE(short_directory.stat().st_mode)
+
+    handler = diagnostic_logging.open_log_file(directory / "engine.log")
+    handler.close()
+
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o755
+    assert stat.S_IMODE(short_directory.stat().st_mode) == parent_mode
+    assert neighbour.read_text() == "unrelated\n"
+    assert stat.S_IMODE((directory / "engine.log").stat().st_mode) == 0o600
+
+
 # ---------------------------------------------------------------- end to end, as separate processes
 
 
@@ -579,6 +745,27 @@ def test_an_engine_whose_log_file_cannot_be_opened_still_starts_and_stops(short_
         assert run_ape("-x", "--socket", str(engine.endpoint)).returncode == 0
         assert engine.wait() == 0
         assert "logging to standard error only" in engine.log_text()
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("destination", ["named-pipe", "symbolic-link"])
+def test_an_engine_given_an_unsafe_log_file_starts_without_it_and_stops(short_directory, destination):
+    path = short_directory / "diagnostic.log"  # not engine.log: that is where EngineProcess captures standard error
+    target = short_directory / "target"
+    if destination == "named-pipe":
+        os.mkfifo(path, 0o600)
+    else:
+        target.write_text("do not touch\n")
+        path.symlink_to(target)
+    engine = EngineProcess(short_directory, cycle_interval=0.2, extra_args=("--log-file", str(path)))
+    try:
+        engine.wait_until_running()
+        assert run_ape("-x", "--socket", str(engine.endpoint)).returncode == 0
+        assert engine.wait() == 0
+        assert "logging to standard error only" in engine.log_text()
+        if destination == "symbolic-link":
+            assert target.read_text() == "do not touch\n"
     finally:
         engine.close()
 

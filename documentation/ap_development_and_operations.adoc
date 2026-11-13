@@ -693,7 +693,7 @@ The Engine foundation tests cover:
 * `test_cli.py`: the `ape` client against canned servers: what it sends, how it displays `ping`, `echo` and STOP answers, its exit status for every refusal and unintelligible answer, correlation checking, bounded waits, usage errors.
 * `test_engine_processes.py`: the Engine and `ape` as separate operating-system processes: `ape -x`, `SIGINT`, `SIGTERM`, an injected unexpected exception, a conflicting second start, `SIGKILL` followed by a restart, restart without replaying STOP, malformed requests against a live Engine, and every `ape` failure mode with bounded waits.
 * `test_failure_handling.py`: lifecycle and IPC failure handling (Issue #8): `ape` retrying only the connection while the Engine's connection queue is full, its single overall deadline, a request never resent, immediate exit 3 or 4 for an unavailable Engine or a permission problem, `internal_error` answers (exit 6); exactly the approved recoverable connection errors contained per connection and every other error propagated; the fixed `internal_error` answer before a request-handler failure, without exception details, and the original exception kept; interruptions never answered; withdrawing the endpoint; the final servicing pass of a controlled shutdown (its limits, authorization, STOP answered "already initiated" and audited, clients beyond the limit unanswered, none after a failure, a failure during it recorded as `ENGINE_FAILURE` with phase `shutdown`); recovery from descriptor exhaustion without spinning; repeated STOP and `SIGINT`/`SIGTERM` with queued and stalled clients end to end; an unsafe IPC directory stopping startup cleanly; and (Issue #9) exactly the approved `accept()` errors contained, every other one propagated, and a broken listener ending the Engine with exit status 1 and cleanup, whether it fails inside a cycle or while idling.
-* `test_service_notify.py`: the systemd notification contract (Issue #9) against a fake notification socket: activation from `NOTIFY_SOCKET`, `WATCHDOG_USEC` and `WATCHDOG_PID` (a watchdog for another process disables only the watchdog), malformed variables, the watchdog interval rule, READY and STOPPING once each, heartbeats only between them and at most once per quarter of the actual timeout, abstract socket names, a full or vanished notification socket never blocking or raising for heartbeats and STOPPING; in the Engine: READY after `ENGINE_RUNNING` with the endpoint listening, one heartbeat per completed cycle and none for idle servicing, a failed cycle or the final shutdown pass, STOPPING for every shutdown reason, a failed READY as a startup failure with cleanup once; and as processes: exit status 2 for an impossible watchdog interval or a malformed `NOTIFY_SOCKET`, the full READY/heartbeat/STOPPING sequence, and exit status 1 when the service manager cannot be reached.
+* `test_service_notify.py`: the systemd notification contract (Issue #9) against a fake notification socket: activation from `NOTIFY_SOCKET`, `WATCHDOG_USEC` and `WATCHDOG_PID` (a watchdog for another process disables only the watchdog), malformed variables, the watchdog interval rule, READY and STOPPING once each, heartbeats only between them and at most once per quarter of the actual timeout, abstract socket names, a full or vanished notification socket never blocking or raising for heartbeats and STOPPING; in the Engine: READY after `ENGINE_RUNNING` with the endpoint listening, one heartbeat per completed cycle and none for idle servicing, a failed cycle or the final shutdown pass, STOPPING for every shutdown reason (and no STOPPING attempt, and no warning, when startup failed before the notification socket was opened), a failed READY as a startup failure with cleanup once; and as processes: exit status 2 for an impossible watchdog interval or a malformed `NOTIFY_SOCKET`, exit status 3 for an endpoint conflict without a misleading notification warning, the full READY/heartbeat/STOPPING sequence, and exit status 1 when the service manager cannot be reached.
 * `test_systemd_unit.py`: the reviewed unit and `sysusers.d` file, statically: exactly the reviewed directives, device access disabled (`PrivateDevices=yes`), no network access or dependency, an unprivileged dedicated user, SIGTERM-only stopping, the `ExecStart` paths, the cycle interval within the watchdog rule, owner-only directories, the restart exclusions matching the Engine's exit statuses; the Engine not handling `SIGHUP` (a death by signal) and a handled `SIGTERM` exiting 0; and `systemd-analyze verify` without complaints where available (with a check that it would catch a misspelt directive).
 * `test_systemd_integration.py` (opt-in, `AQUAPONICS_SYSTEMD_TESTS=1`): the Engine in transient systemd user units built from the reviewed unit; see "Validation" under "Engine Service (Initial Implementation)". Skipped by default.
 * `test_request_processing.py`: the Engine and clients as separate processes: `ape --ping` and `ape --echo`, invalid requests, queries that leave no trace on disk or in the audit history, a 30-second cycle interval that does not delay answers or STOP, no extra operating cycles from requests, idle CPU use, descriptor stability, cycles that keep their pace under request streams and stalled clients, and a burst of 40 simultaneous clients that are all answered.
@@ -2302,23 +2302,32 @@ GPIO, I²C or any other device access requires a separate security review before
 *Offline:* the service has no network access and no network dependency (no `network-online.target`); it starts without the network, the API, a login or a desktop session.
 
 Administrative access:: The IPC directory belongs to `aquaponics` and is `0700`.
-An administrator uses `root` (`sudo ape --socket /run/aquaponics/engine.sock ...`) or the service user (`sudo -u aquaponics ape --socket /run/aquaponics/engine.sock ...`); both are authorized by default (the Engine's own user and root, see "Local Administrative IPC (Initial Implementation)").
+An administrator uses `root` (`sudo /opt/aquaponics/venv/bin/ape --socket /run/aquaponics/engine.sock ...`) or the service user (`sudo -u aquaponics /opt/aquaponics/venv/bin/ape --socket /run/aquaponics/engine.sock ...`); both are authorized by default (the Engine's own user and root, see "Local Administrative IPC (Initial Implementation)").
+`ape` is installed only in the service's virtual environment, and `sudo` searches only its own fixed path (`secure_path`), so `ape` is always called by its absolute path `/opt/aquaponics/venv/bin/ape`.
 An administrative group is future work.
 `systemctl` remains an administrative path that does not depend on the IPC endpoint.
 
 ==== Installation
 
 On a non-production workstation, or on the controller when installation there has been authorized.
-Run from a checkout of the reviewed release.
-The virtual environment needs Python 3.11 or later (Ubuntu 22.04's system `python3` is 3.10: use a newer interpreter there).
-Installing from a checkout lets `pip` fetch the build requirements unless they are already present; an offline installation needs them provisioned in advance.
+Run from a checkout of the reviewed release, with that release's commit checked out.
+The build and the virtual environment need Python 3.11 or later (Ubuntu 22.04's system `python3` is 3.10: use a newer interpreter there).
+
+The package is built as the ordinary user, from an export of the committed revision, and only the resulting wheel is installed as `root`.
+Nothing is built as `root`, and nothing is written into the working repository: an uncommitted change cannot slip into the installation, and the checkout gets no `root`-owned build files.
+Building lets `pip` fetch the build requirements (`setuptools`) unless they are already present; an offline build needs them provisioned in advance.
+Installing the wheel needs no network: the package has no runtime dependencies.
 
 [source,text]
 ----
+$ build=$(mktemp -d)                                                   # as the ordinary user
+$ git archive --format=tar --prefix=source/ HEAD | tar -x -C "$build"
+$ python3 -m pip wheel --no-deps --wheel-dir "$build/wheel" "$build/source"
 $ sudo install -m 0644 deploy/sysusers.d/aquaponics.conf /etc/sysusers.d/aquaponics.conf
 $ sudo systemd-sysusers /etc/sysusers.d/aquaponics.conf
 $ sudo python3 -m venv /opt/aquaponics/venv
-$ sudo /opt/aquaponics/venv/bin/python -m pip install .
+$ sudo /opt/aquaponics/venv/bin/python -m pip install --no-index --no-deps "$build"/wheel/aquaponics_controller-*.whl
+$ rm -r "$build"
 $ sudo install -m 0644 deploy/systemd/aquaponics-engine.service /etc/systemd/system/aquaponics-engine.service
 $ sudo systemctl daemon-reload
 $ sudo systemctl start aquaponics-engine
@@ -2336,10 +2345,10 @@ The runtime and state directories are created by systemd; do not create them by 
 |`systemctl status aquaponics-engine`
 |State, main process, restart count, recent journal lines.
 
-|`sudo ape --ping --socket /run/aquaponics/engine.sock`
+|`sudo /opt/aquaponics/venv/bin/ape --ping --socket /run/aquaponics/engine.sock`
 |The Engine answers, with its execution identifier and completed cycles.
 
-|`sudo ape -x --socket /run/aquaponics/engine.sock`
+|`sudo /opt/aquaponics/venv/bin/ape -x --socket /run/aquaponics/engine.sock`
 |Operator STOP: controlled shutdown, exit status 0. The service becomes inactive and is *not* restarted.
 
 |`sudo systemctl stop aquaponics-engine`
@@ -2465,6 +2474,7 @@ At most once per quarter of the *actual* watchdog timeout (`WATCHDOG_USEC`, set 
 A failed send is logged as a `WARNING` (repeat-suppression category `service-notify-failed`) and is otherwise ignored: if heartbeats really stop, the watchdog acts.
 
 `STOPPING=1`:: Sent once at the start of every shutdown, whatever its reason. A failed send is logged and the shutdown continues.
+If startup failed before the notification socket was opened (for example exit status 3, another Engine owns the endpoint), nothing is sent and nothing is logged about it: systemd learns the outcome from the exit status.
 
 Activation:: Without `NOTIFY_SOCKET` (a terminal, the tests) nothing is sent and the Engine behaves exactly as before.
 The watchdog is active only if `WATCHDOG_USEC` is also set and `WATCHDOG_PID` is unset or the Engine's own process ID; `WATCHDOG_PID` never disables READY or STOPPING.
@@ -2565,8 +2575,8 @@ Three tiers (Issue #9, D16):
 On a non-production workstation with `sudo`, never on the live installation.
 
 . Install as described in "Installation".
-. `sudo systemctl start aquaponics-engine`; `systemctl status aquaponics-engine`; `sudo ape --ping --socket /run/aquaponics/engine.sock`.
-. `sudo ape -x --socket /run/aquaponics/engine.sock`: the service is inactive and not restarted (`NRestarts=0`).
+. `sudo systemctl start aquaponics-engine`; `systemctl status aquaponics-engine`; `sudo /opt/aquaponics/venv/bin/ape --ping --socket /run/aquaponics/engine.sock`.
+. `sudo /opt/aquaponics/venv/bin/ape -x --socket /run/aquaponics/engine.sock`: the service is inactive and not restarted (`NRestarts=0`).
 . Start it again. `sudo systemctl kill -s KILL aquaponics-engine`: restarted after 5 s with a new execution identifier. Then `-s HUP`: restarted. Then `-s STOP`: after 10 s the watchdog kills it and it is restarted.
 . `sudo systemctl stop aquaponics-engine`: graceful, exit status 0.
 . `journalctl -u aquaponics-engine -p err` and `systemd-analyze security aquaponics-engine` (the exposure score and every unmet restriction are worth recording).

@@ -515,6 +515,9 @@ Executable:         /opt/aquaponics/venv/bin/aquaponics-engine
                     --socket /run/aquaponics/engine.sock
                     --audit-file /var/lib/aquaponics/lifecycle_audit.jsonl
                     --cycle-interval 1.0
+Operator CLI:       /opt/aquaponics/venv/bin/ape --socket /run/aquaponics/engine.sock
+                    (absolute path: sudo's secure_path does not include the virtual environment)
+Installed from:     wheel built by the ordinary user from commit TBD (record the commit hash)
 Restart policy:     Restart=on-failure, RestartSec=5s, RestartPreventExitStatus=2 3 4,
                     RestartForceExitStatus=SIGHUP, at most 5 starts within 300 s
 Start / stop:       TimeoutStartSec=30s (READY required), TimeoutStopSec=10s (SIGTERM, then SIGKILL)

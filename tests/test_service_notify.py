@@ -278,6 +278,37 @@ def test_failed_heartbeats_and_a_failed_stopping_never_raise_and_are_reported(ma
     assert any("reporting the shutdown to systemd failed" in r.getMessage() for r in caplog.records)
 
 
+def test_stopping_without_an_opened_socket_sends_nothing_and_reports_nothing(manager, caplog):
+    # Startup failed before the notification socket was opened (for example exit status 3).
+    notifier = notifier_for(manager, watchdog_seconds=1.0)
+
+    with caplog.at_level(logging.DEBUG, logger="aquaponics_controller.service_notify"):
+        notifier.notify_stopping()
+        notifier.notify_watchdog()  # still nothing: STOPPING ends the heartbeats in any case
+        notifier.close()
+
+    assert manager.collect() == []
+    assert [r.getMessage() for r in caplog.records] == []
+
+
+def test_stopping_after_open_is_sent_once_and_a_failed_send_is_still_reported(manager, caplog):
+    notifier = notifier_for(manager)
+    notifier.open()
+    notifier.notify_stopping()
+    notifier.notify_stopping()
+    assert manager.collect() == [b"STOPPING=1"]
+    notifier.close()
+
+    unreachable = notifier_for(manager)
+    unreachable.open()
+    manager.close()
+    os.unlink(manager.address)  # the service manager has gone away after the socket was opened
+    with caplog.at_level(logging.WARNING):
+        unreachable.notify_stopping()
+        unreachable.close()
+    assert [r.getMessage() for r in caplog.records if "reporting the shutdown to systemd failed" in r.getMessage()] != []
+
+
 def test_a_full_service_manager_queue_never_blocks_a_notification(manager):
     notifier = notifier_for(manager, watchdog_seconds=0.004)
     notifier.open()
@@ -585,6 +616,26 @@ def test_a_watchdog_meant_for_another_process_still_lets_the_engine_report_ready
         engine.close()
 
     assert manager.collect() == [b"READY=1", b"STOPPING=1"]
+
+
+def test_a_startup_conflict_exits_3_without_a_misleading_notification_warning(short_directory, manager):
+    owner = EngineProcess(short_directory, cycle_interval=0.1, name="owner")
+    try:
+        owner.wait_until_running()
+        intruder = run_engine_main(
+            short_directory, {"NOTIFY_SOCKET": manager.address, "WATCHDOG_USEC": "10000000"}, "--cycle-interval", "1.0"
+        )
+    finally:
+        owner.send_signal(signal.SIGTERM)
+        owner.wait()
+        owner.close()
+
+    assert intruder.returncode == ExitStatus.ALREADY_RUNNING
+    # The notification socket was never opened, so no STOPPING delivery was attempted or reported.
+    assert "reporting the shutdown to systemd failed" not in intruder.stderr
+    assert "notification socket is not open" not in intruder.stderr
+    assert "WARNING" not in intruder.stderr
+    assert manager.collect() == []  # neither READY nor STOPPING from the second Engine
 
 
 def test_an_unreachable_service_manager_makes_the_engine_process_exit_1_after_cleanup(short_directory):

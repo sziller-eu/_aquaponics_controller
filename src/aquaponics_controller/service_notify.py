@@ -120,7 +120,8 @@ class ServiceNotifier:
       Without READY, systemd would end the start attempt at TimeoutStartSec anyway.
     - ``notify_watchdog``: a failed send is a rate-limited WARNING and nothing else. If heartbeats
       really stop, systemd's watchdog acts; that is its purpose.
-    - ``notify_stopping``: a failed send is a WARNING; the shutdown continues.
+    - ``notify_stopping``: a failed send is a WARNING; the shutdown continues. If the socket was never
+      opened (startup failed before it), nothing is sent and nothing is reported.
     """
 
     def __init__(self, settings: ServiceManagerSettings | None = None, *, clock=None):
@@ -205,10 +206,17 @@ class ServiceNotifier:
         self._last_heartbeat = now
 
     def notify_stopping(self) -> None:
-        """STOPPING=1, once, at the start of shutdown. A failed send is logged; the shutdown continues."""
+        """STOPPING=1, once, at the start of shutdown. A failed send is logged; the shutdown continues.
+
+        If the notification socket was never opened (startup failed before it, for example because
+        another Engine owns the endpoint), nothing is sent and nothing is reported: there was no
+        delivery attempt that could fail, and systemd learns the outcome from the exit status.
+        """
         if not self.active or self._stopping_sent:
             return
         self._stopping_sent = True  # also ends the heartbeats, even if this send fails
+        if self._socket is None:
+            return  # never opened: no notification transport, so no failed delivery to report
         try:
             self._send(MESSAGE_STOPPING)
         except OSError as exc:

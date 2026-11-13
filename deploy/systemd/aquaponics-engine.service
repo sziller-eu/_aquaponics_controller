@@ -1,0 +1,73 @@
+# Aquaponics Engine: systemd system service (Issue #9, development foundation).
+#
+# Reviewed deployment artefact. Install manually as described in "Engine Service (Initial
+# Implementation)" in documentation/ap_development_and_operations.adoc. Do not edit a directive
+# without the review that document requires: the static test tests/test_systemd_unit.py checks
+# every contract directive below.
+#
+# Supervision contract (Issue #9, D1-D16):
+# - Type=notify: the Engine reports READY=1 once it runs and its IPC endpoint listens, WATCHDOG=1
+#   after completed operating cycles, STOPPING=1 when it shuts down.
+# - A deliberate stop (ape STOP, systemctl stop, a handled SIGTERM) exits 0 and is never restarted.
+#   An Engine failure (exit 1), a death by signal (SIGHUP included), a watchdog timeout and a start
+#   timeout are restarted, at most 5 starts within 300 s. Exit 2 (configuration), 3 (another Engine
+#   owns the endpoint) and 4 (cleanup failed) are not restarted.
+# - Offline: no network dependency, no network access, no device access (PrivateDevices=yes).
+#   GPIO / I2C access requires a separate security review before this changes.
+# - Persistent state (the lifecycle audit) lives in /var/lib/aquaponics and is never removed by
+#   stopping, disabling or removing this service.
+
+[Unit]
+Description=Aquaponics Engine (autonomous controller, development foundation)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+# Offline-first: no network dependency of any kind.
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=aquaponics
+Group=aquaponics
+UMask=0077
+RuntimeDirectory=aquaponics
+RuntimeDirectoryMode=0700
+StateDirectory=aquaponics
+StateDirectoryMode=0700
+ExecStart=/opt/aquaponics/venv/bin/aquaponics-engine \
+    --socket ${RUNTIME_DIRECTORY}/engine.sock \
+    --audit-file ${STATE_DIRECTORY}/lifecycle_audit.jsonl \
+    --cycle-interval 1.0
+Environment=PYTHONFAULTHANDLER=1 PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=2 3 4
+RestartForceExitStatus=SIGHUP
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+WatchdogSec=10s
+SyslogIdentifier=aquaponics-engine
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

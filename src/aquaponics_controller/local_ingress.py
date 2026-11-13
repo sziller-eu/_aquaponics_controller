@@ -20,7 +20,11 @@ only the recoverable errors in ``RECOVERABLE_CONNECTION_ERRNOS``, raised by an
 operation on one accepted client connection, are contained: that connection is
 closed and the Engine carries on. Any other exception propagates and becomes an
 Engine failure; when the request handler raised it, the client is first sent a
-fixed ``internal_error`` answer (best effort).
+fixed ``internal_error`` answer (best effort). The same principle applies to the
+listening socket: only the ``accept()`` errors in ``CONTAINED_ACCEPT_ERRNOS`` are
+contained (Issue #9, D14); any other one means the listener itself is broken, and it
+becomes an Engine failure, so that the service manager restarts the Engine instead
+of the Engine carrying on, heartbeat included, without administrative access.
 
 Single instance: an exclusive ``flock`` on ``<endpoint>.lock`` is held for the
 life of the Engine. The kernel releases it if the process dies, so a crash never
@@ -59,14 +63,20 @@ from .ipc_protocol import (
 logger = logging.getLogger(__name__)
 
 # accept() failures that can repeat every few hundred milliseconds for as long as the condition
-# lasts (descriptor or memory exhaustion). Each is its own suppression category; an accept()
-# failure with any other errno is always logged in full.
+# lasts (descriptor or memory exhaustion). Each is its own suppression category.
 REPEATING_ACCEPT_FAILURES = {
     errno.EMFILE: "EMFILE",
     errno.ENFILE: "ENFILE",
     errno.ENOBUFS: "ENOBUFS",
     errno.ENOMEM: "ENOMEM",
 }
+
+# The ONLY accept() errors contained (Issue #9, D14, approved classification): transient resource
+# exhaustion (the categories above) and a client that went away while queued (ECONNABORTED). The
+# servicing call ends there and the Engine carries on. An empty queue (EAGAIN / EWOULDBLOCK, raised
+# as BlockingIOError) is not an error and simply ends the call. Every other accept() error (EBADF,
+# EINVAL, ENOTSOCK, EFAULT, ...) means the listener is broken: it propagates as an Engine failure.
+CONTAINED_ACCEPT_ERRNOS = frozenset(REPEATING_ACCEPT_FAILURES) | {errno.ECONNABORTED}
 
 # The ONLY errors contained per connection (Issue #8, approved classification), and only when raised by an
 # operation on the accepted client connection itself (recv, sendall, settimeout, getsockopt, close):
@@ -256,8 +266,10 @@ class LocalAdministrativeIngress:
             try:
                 connection, _ = self._listener.accept()
             except BlockingIOError:
-                break
+                break  # nobody (else) is waiting
             except OSError as exc:
+                if exc.errno not in CONTAINED_ACCEPT_ERRNOS:
+                    raise  # the listener is broken: an Engine failure (fail-stop), not a warning
                 self._report_accept_failure(exc)
                 break
             handled += 1
@@ -289,7 +301,7 @@ class LocalAdministrativeIngress:
     def _report_accept_failure(self, exc: OSError) -> None:
         report = self._accept_failure_reports.get(exc.errno)
         if report is None:
-            logger.warning("accepting an IPC connection failed: %s", exc)  # not a known repeating category
+            logger.warning("accepting an IPC connection failed: %s", exc)  # contained, but not a repeating category
         else:
             report.report(f"[Errno {exc.errno}] {exc.strerror}")
 

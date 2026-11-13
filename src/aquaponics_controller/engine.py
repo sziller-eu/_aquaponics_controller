@@ -3,7 +3,7 @@
 IMPORTANT: this is a development foundation, not a production controller.
 It has NO hardware, GPIO or relay control, NO sensors, NO scheduling, NO durable
 operational command journal, NO operational state database, NO state
-reconciliation, NO REST API and NO process supervision. An operating cycle passes
+reconciliation and NO REST API. An operating cycle passes
 through seven named phases (see ``cycle_phases``); the only one that does real work
 is servicing pending local administrative requests, the others are placeholders.
 Requests are also answered while the Engine idles between cycles, which never
@@ -17,6 +17,11 @@ Responsibilities are kept apart:
 - ``Engine._wait_for_next_cycle`` idle until the next cycle is due, answering requests meanwhile.
 - ``Engine._handle_administrative_request``  the one entry point for every request: authorize, dispatch.
 - ``Engine._shutdown``            final bounded servicing of queued requests (controlled shutdown only), cleanup, attempted once.
+
+Process supervision is systemd's (see "Engine Service (Initial Implementation)" in the operations
+documentation). The Engine only reports to it, through ``service_notify``: READY at the end of
+startup, a watchdog heartbeat after each completed operating cycle (rate-limited), STOPPING at the
+start of shutdown. Started without systemd, those reports are no-ops.
 
 Execution is sequential: no threads, no multiprocessing, no asynchronous framework.
 Signal handlers (installed by the entry point) only set a stop flag and wake the
@@ -51,6 +56,7 @@ from .ipc_protocol import (
 )
 from .lifecycle_audit import LifecycleAudit, LifecycleEvent
 from .local_ingress import EndpointInUseError, LocalAdministrativeIngress
+from .service_notify import ServiceNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -127,12 +133,15 @@ class Engine:
         ingress: LocalAdministrativeIngress,
         audit: LifecycleAudit,
         clock=None,
+        service_notifier: ServiceNotifier | None = None,
     ):
         self._execution_id = execution_id
         self._config = config
         self._ingress = ingress
         self._audit = audit
         self._clock = clock if clock is not None else SystemClock()
+        # Reports to the systemd service manager; does nothing unless the entry point configured it.
+        self._service_notifier = service_notifier if service_notifier is not None else ServiceNotifier(clock=self._clock)
 
         self._state = LifecycleState.CREATED
         self._stop_requested = threading.Event()  # the stop flag only; no threads are created
@@ -216,9 +225,15 @@ class Engine:
 
         self._ingress.open()
         self._idle_wait.open(self._ingress.readiness_source)
+        self._service_notifier.open()
 
-        self._state = LifecycleState.RUNNING
         self._audit.record(LifecycleEvent.ENGINE_RUNNING)
+        # READY last: the Engine is running and its endpoint listens. If systemd expects READY and it
+        # cannot be sent, startup fails (fail-stop, ENGINE_FAILURE with phase "startup"): without it
+        # systemd would end this start attempt at its start timeout anyway. That is why the state
+        # becomes RUNNING only afterwards.
+        self._service_notifier.notify_ready()
+        self._state = LifecycleState.RUNNING
         logger.info(
             "Engine entering continuous operation (cycle interval %.3f s, endpoint %s)",
             self._config.cycle_interval_seconds,
@@ -255,6 +270,11 @@ class Engine:
         self._run_phase(CyclePhase.FINALIZE_CYCLE, self._finalize_cycle)
         self._cycles_completed += 1
         logger.debug("operating cycle %d completed", self._cycles_completed)
+        # The watchdog heartbeat: only here, after every phase has returned and the cycle is counted.
+        # Never from the idle wait or idle-time servicing, never after a phase raised. It shows that
+        # the control loop completes cycles; it does NOT show that the IPC is reachable or that the
+        # installation is safe.
+        self._service_notifier.notify_watchdog()
         self._current_cycle_number = None
         log_context.cycle = None
 
@@ -308,7 +328,11 @@ class Engine:
         """
 
     def _finalize_cycle(self) -> None:
-        """NOT IMPLEMENTED: placeholder. Persists no state and refreshes no health heartbeat."""
+        """NOT IMPLEMENTED: placeholder. Persists no state.
+
+        The service watchdog heartbeat is sent by ``run_operating_cycle`` after this phase has returned.
+        Once real work exists, the heartbeat must follow successful critical work, not merely a cycle.
+        """
 
     def _wait_for_next_cycle(self, cycle_started: float) -> None:
         """Idle until the next cycle is due, answering client requests that arrive meanwhile.
@@ -491,6 +515,8 @@ class Engine:
         self._shutdown_attempted = True
         self._state = LifecycleState.STOPPING
         log_context.cycle = None  # shutdown is not part of any cycle (a failed cycle's records are already written)
+        # Tell systemd at once that this is a shutdown (whatever its reason); no heartbeat follows.
+        self._service_notifier.notify_stopping()
 
         reason = self._stop_reason or ShutdownReason.FAILURE
         context = dict(self._stop_context)
@@ -565,6 +591,7 @@ class Engine:
         for description, release in (
             ("administrative IPC endpoint", self._ingress.close),
             ("idle-wait channel", self._idle_wait.close),
+            ("systemd notification socket", self._service_notifier.close),
         ):
             try:
                 release()

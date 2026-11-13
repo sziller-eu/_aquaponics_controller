@@ -5,7 +5,8 @@
 - the ingress: only the approved recoverable connection errors are contained per connection,
   anything else propagates; a failing request handler first sends a fixed internal_error answer;
 - the Engine: the bounded final servicing pass of a controlled shutdown, and failures during it;
-- recovery from descriptor exhaustion, and repeated STOP and signals end to end.
+- recovery from descriptor exhaustion, and repeated STOP and signals end to end;
+- Issue #9 (D14): only the approved accept() errors are contained; any other one is an Engine failure.
 
 Fake connections and fake servers are used where a real kernel condition cannot be produced on
 demand. Nothing here touches hardware or the network.
@@ -30,6 +31,7 @@ from aquaponics_controller import ipc_protocol as protocol
 from aquaponics_controller.engine import SHUTDOWN_SERVICING_TIME_LIMIT_SECONDS, Engine, EngineConfig, ExitStatus
 from aquaponics_controller.lifecycle_audit import LifecycleAudit, read_lifecycle_records
 from aquaponics_controller.local_ingress import (
+    CONTAINED_ACCEPT_ERRNOS,
     RECOVERABLE_CONNECTION_ERRNOS,
     LocalAdministrativeIngress,
     is_recoverable_connection_error,
@@ -868,6 +870,116 @@ def test_the_engine_recovers_from_descriptor_exhaustion_without_spinning(short_d
     assert listeners[0].failed_attempts <= 8
     logged = [r for r in caplog.records if "accepting an IPC connection failed" in r.getMessage()]
     assert len([r for r in logged if "suppressed" not in r.getMessage()]) <= 3  # rate-limited by category
+
+
+# ================================================================ accept() errors: contained or fail-stop (Issue #9, D14)
+
+
+class FailingListener:
+    """Wraps the real listening socket: every accept() fails with the given error."""
+
+    def __init__(self, real, error):
+        self.real = real
+        self.error = error
+        self.attempts = 0
+
+    def accept(self):
+        self.attempts += 1
+        raise self.error
+
+    def fileno(self):
+        return self.real.fileno()
+
+    def close(self):
+        self.real.close()
+
+
+def test_exactly_the_approved_accept_errors_are_contained():
+    assert CONTAINED_ACCEPT_ERRNOS == {errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM, errno.ECONNABORTED}
+
+
+CONTAINED_ACCEPT_ERRORS = [
+    OSError(errno.EMFILE, "Too many open files"),
+    OSError(errno.ENFILE, "Too many open files in system"),
+    OSError(errno.ENOBUFS, "No buffer space available"),
+    OSError(errno.ENOMEM, "Cannot allocate memory"),
+    ConnectionAbortedError(errno.ECONNABORTED, "Software caused connection abort"),
+]
+
+
+@pytest.mark.parametrize("error", CONTAINED_ACCEPT_ERRORS, ids=lambda e: errno.errorcode[e.errno])
+def test_a_contained_accept_error_ends_the_call_with_a_warning_and_the_ingress_carries_on(ingress, caplog, error):
+    real = ingress._listener
+    ingress._listener = FailingListener(real, error)
+    with caplog.at_level(logging.WARNING):
+        assert ingress.service_pending_requests(RecordingHandler()) == 0
+    assert "accepting an IPC connection failed" in caplog.text
+
+    ingress._listener = real  # the condition has passed
+    assert ask_for_real(ingress, RecordingHandler())["ok"] is True
+
+
+def test_an_empty_queue_is_not_an_error(ingress, caplog):
+    with caplog.at_level(logging.WARNING):
+        assert ingress.service_pending_requests(RecordingHandler()) == 0
+    assert caplog.records == []
+
+
+UNCLASSIFIED_ACCEPT_ERRORS = [
+    OSError(errno.EBADF, "Bad file descriptor"),
+    OSError(errno.EINVAL, "Invalid argument"),
+    OSError(errno.ENOTSOCK, "Socket operation on non-socket"),
+    OSError(errno.EFAULT, "Bad address"),
+    PermissionError(errno.EPERM, "Operation not permitted"),
+]
+
+
+@pytest.mark.parametrize("error", UNCLASSIFIED_ACCEPT_ERRORS, ids=lambda e: errno.errorcode[e.errno])
+def test_any_other_accept_error_propagates(ingress, error):
+    ingress._listener = FailingListener(ingress._listener, error)
+
+    with pytest.raises(OSError) as raised:
+        ingress.service_pending_requests(RecordingHandler())
+    assert raised.value is error
+
+
+@pytest.mark.parametrize("while_idle", [False, True], ids=["in-cycle", "while-idle"])
+def test_a_broken_listener_is_an_engine_failure_with_exit_1_and_cleanup_once(short_directory, caplog, while_idle):
+    failing = []
+
+    def break_listener(ingress):
+        failing.append(FailingListener(ingress._listener, OSError(errno.EBADF, "Bad file descriptor")))
+        ingress._listener = failing[0]
+        if while_idle:
+            # Make the listener readable so that the idle wait, not the cycle, reaches accept() first.
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.connect(str(ingress.endpoint))
+            failing.append(client)
+
+    engine, ingress = real_engine(short_directory, break_listener, interval=1.0 if while_idle else 0.05)
+    if while_idle:
+        engine._ingest_external_intents = lambda: None  # only the idle-time servicing reaches accept()
+    start_watchdog(engine, seconds=8.0)
+
+    with caplog.at_level(logging.ERROR):
+        status = engine.run()
+    for extra in failing[1:]:
+        extra.close()
+
+    assert status is ExitStatus.FAILURE
+    assert failing[0].attempts == 1  # no retrying, no warning loop
+    records = read_lifecycle_records(short_directory / "audit.jsonl")
+    failure = next(r for r in records if r["event"] == "ENGINE_FAILURE")
+    assert failure["reason"] == "OSError"
+    assert "Bad file descriptor" in failure["context"]["message"]
+    assert failure["context"]["phase"] == "operation"
+    if while_idle:
+        assert "cycle_phase" not in failure["context"]
+    else:
+        assert failure["context"]["cycle_phase"] == "INGEST_EXTERNAL_INTENTS"
+    assert events_of(records)[-1] == "SHUTDOWN_COMPLETED"
+    assert len([r for r in caplog.records if r.getMessage().startswith("Engine failure during operation")]) == 1
+    assert not ingress.endpoint.exists()  # cleaned up: a restarted Engine creates a fresh endpoint
 
 
 # ================================================================ end to end: repeated STOP and signals

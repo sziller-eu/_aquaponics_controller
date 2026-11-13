@@ -685,21 +685,24 @@ The Engine foundation tests cover:
 
 * `test_engine_lifecycle.py`: Engine lifecycle in one process with a scripted stand-in for the IPC ingress: single startup, repeated cycles, STOP handling, signals, unexpected exceptions, failed cleanup, startup conflicts, audit failures, refusal of unauthorized peers and unsupported operations, pacing and CPU use, interruptible idle waiting, non-replay of earlier STOP records. It also covers the request dispatcher (`ping` and `echo` results, argument validation including Unicode and the 256-character boundary, authorization of queries, request classes, no audit or persistence of queries, diagnostic traces) and the responsive idle wait (requests serviced while idling without starting a cycle, the unchanged cycle deadline under request bursts, readiness without progress, a wake-up arriving at any moment, failure while servicing, release of the wake-up resources).
 * `test_cycle_phases.py`: the operating-cycle phases in one process: the approved phase order, each phase once per cycle, counting a cycle only after its last phase, request servicing only in `INGEST_EXTERNAL_INTENTS` and never as a phase while idling, an exception in each phase (later phases skipped, cycle not counted, `cycle_phase` and `cycle_number` recorded), overrun warnings for each phase with a simulated clock, no catch-up after a long cycle, STOP and signals during each phase, the time limits and their relation to the ingress bounds and the `ape` timeout, placeholders that do nothing and leave no trace on disk.
-* `test_diagnostic_logging.py`: diagnostic logging: the record format and its fields, the execution identifier on every record and identical to the audit history's, the cycle field inside cycles and `-` outside them, failures logged with their cycle number for every phase, no `INFO` output from idle cycles, no logging from signal handlers, opt-in repeat suppression (first occurrences, counting, summaries, flush, levels that may not be suppressed, separate categories per `accept()` errno, unlisted errors and refused requests never suppressed, bounded retention without exception objects), failing destinations (one report without record content or traceback, no exception raised, counts at shutdown, the Engine unaffected), the log file's size bound, rotation failure, permissions, refusal of unsafe destinations (symbolic links and hard links, also after rotation; named pipes with and without a reader; devices; directories; permissions that cannot be restricted), restriction of a permissive existing file, existing directories left unchanged, and fallback to standard error when the file cannot be opened or is refused, and end to end the execution identifier and request trace without the `echo` text.
+* `test_diagnostic_logging.py`: diagnostic logging: the record format and its fields, the execution identifier on every record and identical to the audit history's, the cycle field inside cycles and `-` outside them, failures logged with their cycle number for every phase, no `INFO` output from idle cycles, no logging from signal handlers, opt-in repeat suppression (first occurrences, counting, summaries, flush, levels that may not be suppressed, separate categories per `accept()` errno, unlisted errors and refused requests never suppressed, bounded retention without exception objects), failing destinations (one report without record content or traceback, no exception raised, counts at shutdown, the Engine unaffected), the log file's size bound, rotation failure, permissions, refusal of unsafe destinations (symbolic links and hard links, also after rotation; named pipes with and without a reader; devices; directories; permissions that cannot be restricted), restriction of a permissive existing file, existing directories left unchanged, and fallback to standard error when the file cannot be opened or is refused, and end to end the execution identifier and request trace without the `echo` text; journald priorities (Issue #9): the level-to-priority mapping, every line of a traceback prefixed, prefixes only when standard error really is the journald stream (not merely when `JOURNAL_STREAM` is inherited), the log file unchanged, and an Engine process under a simulated journald stream.
 * `test_idle_wait.py`: the readiness-driven idle wait with real sockets: timeout, wake-up before and during a wait, consumption of wake-ups, readiness of the ingress socket, ignoring it on request, release of descriptors.
 * `test_local_ingress.py`: the real Unix socket in one process: protocol errors, oversized requests, stalled and disconnecting clients, connection and time bounds (including the idle-wait time limit), `0700`/`0600` permissions, validation of the IPC directory (symbolic links, non-directories, other owners, directories writable by others refused; readable ones restricted; lock-file and stale-socket checks), peer credentials, single-instance refusal, stale endpoint replacement, cleanup, the readiness source, correlation identifiers, and traces that never contain request arguments.
 * `test_lifecycle_audit.py`: record content, appending across executions, flushing, failure to persist, partly written lines.
 * `test_ipc_protocol.py`: encoding, validation, endpoint resolution, the optional correlation identifier and arguments, and the size limit for the largest valid messages.
 * `test_cli.py`: the `ape` client against canned servers: what it sends, how it displays `ping`, `echo` and STOP answers, its exit status for every refusal and unintelligible answer, correlation checking, bounded waits, usage errors.
 * `test_engine_processes.py`: the Engine and `ape` as separate operating-system processes: `ape -x`, `SIGINT`, `SIGTERM`, an injected unexpected exception, a conflicting second start, `SIGKILL` followed by a restart, restart without replaying STOP, malformed requests against a live Engine, and every `ape` failure mode with bounded waits.
-* `test_failure_handling.py`: lifecycle and IPC failure handling (Issue #8): `ape` retrying only the connection while the Engine's connection queue is full, its single overall deadline, a request never resent, immediate exit 3 or 4 for an unavailable Engine or a permission problem, `internal_error` answers (exit 6); exactly the approved recoverable connection errors contained per connection and every other error propagated; the fixed `internal_error` answer before a request-handler failure, without exception details, and the original exception kept; interruptions never answered; withdrawing the endpoint; the final servicing pass of a controlled shutdown (its limits, authorization, STOP answered "already initiated" and audited, clients beyond the limit unanswered, none after a failure, a failure during it recorded as `ENGINE_FAILURE` with phase `shutdown`); recovery from descriptor exhaustion without spinning; repeated STOP and `SIGINT`/`SIGTERM` with queued and stalled clients end to end; an unsafe IPC directory stopping startup cleanly.
+* `test_failure_handling.py`: lifecycle and IPC failure handling (Issue #8): `ape` retrying only the connection while the Engine's connection queue is full, its single overall deadline, a request never resent, immediate exit 3 or 4 for an unavailable Engine or a permission problem, `internal_error` answers (exit 6); exactly the approved recoverable connection errors contained per connection and every other error propagated; the fixed `internal_error` answer before a request-handler failure, without exception details, and the original exception kept; interruptions never answered; withdrawing the endpoint; the final servicing pass of a controlled shutdown (its limits, authorization, STOP answered "already initiated" and audited, clients beyond the limit unanswered, none after a failure, a failure during it recorded as `ENGINE_FAILURE` with phase `shutdown`); recovery from descriptor exhaustion without spinning; repeated STOP and `SIGINT`/`SIGTERM` with queued and stalled clients end to end; an unsafe IPC directory stopping startup cleanly; and (Issue #9) exactly the approved `accept()` errors contained, every other one propagated, and a broken listener ending the Engine with exit status 1 and cleanup, whether it fails inside a cycle or while idling.
+* `test_service_notify.py`: the systemd notification contract (Issue #9) against a fake notification socket: activation from `NOTIFY_SOCKET`, `WATCHDOG_USEC` and `WATCHDOG_PID` (a watchdog for another process disables only the watchdog), malformed variables, the watchdog interval rule, READY and STOPPING once each, heartbeats only between them and at most once per quarter of the actual timeout, abstract socket names, a full or vanished notification socket never blocking or raising for heartbeats and STOPPING; in the Engine: READY after `ENGINE_RUNNING` with the endpoint listening, one heartbeat per completed cycle and none for idle servicing, a failed cycle or the final shutdown pass, STOPPING for every shutdown reason (and no STOPPING attempt, and no warning, when startup failed before the notification socket was opened), a failed READY as a startup failure with cleanup once; and as processes: exit status 2 for an impossible watchdog interval or a malformed `NOTIFY_SOCKET`, exit status 3 for an endpoint conflict without a misleading notification warning, the full READY/heartbeat/STOPPING sequence, and exit status 1 when the service manager cannot be reached.
+* `test_systemd_unit.py`: the reviewed unit and `sysusers.d` file, statically: exactly the reviewed directives, device access disabled (`PrivateDevices=yes`), no network access or dependency, an unprivileged dedicated user, SIGTERM-only stopping, the `ExecStart` paths, the cycle interval within the watchdog rule, owner-only directories, the restart exclusions matching the Engine's exit statuses; the Engine not handling `SIGHUP` (a death by signal) and a handled `SIGTERM` exiting 0; and `systemd-analyze verify` without complaints where available (with a check that it would catch a misspelt directive).
+* `test_systemd_integration.py` (opt-in, `AQUAPONICS_SYSTEMD_TESTS=1`): the Engine in transient systemd user units built from the reviewed unit; see "Validation" under "Engine Service (Initial Implementation)". Skipped by default.
 * `test_request_processing.py`: the Engine and clients as separate processes: `ape --ping` and `ape --echo`, invalid requests, queries that leave no trace on disk or in the audit history, a 30-second cycle interval that does not delay answers or STOP, no extra operating cycles from requests, idle CPU use, descriptor stability, cycles that keep their pace under request streams and stalled clients, and a burst of 40 simultaneous clients that are all answered.
 
 What the tests cannot show:
 
 * A real permission denial for a different Linux user. The tests check permission modes, the peer credential check and a socket with no permissions for its own user. Verify the cross-user case by hand as described in "Local Administrative IPC (Initial Implementation)".
 * Behaviour after power loss, or the physical durability of `fsync`.
-* Behaviour under `systemd` supervision.
+* Behaviour under `systemd` supervision, unless the opt-in user-level integration tests are run. Even then, the production service identity, system-level sandboxing, start at boot and Raspberry Pi behaviour are covered only by the manual demonstration (see "Engine Service (Initial Implementation)").
 
 The permission-denial test is skipped when run as `root`, because `root` bypasses file permission checks.
 
@@ -1604,6 +1607,8 @@ The API service identity shall be restricted to the capabilities required by its
 
 The API shall not receive hardware privileges merely because the Engine requires them.
 
+The Engine's service user is `aquaponics`; see "Engine Service (Initial Implementation)".
+
 
 === systemd Deployment
 
@@ -1639,6 +1644,8 @@ The API shall detect Engine unavailability and recover communication when the En
 
 No desktop login session shall be required.
 
+The Engine service is implemented as described in "Engine Service (Initial Implementation)". The API service does not exist yet.
+
 
 === Engine Service Supervision
 
@@ -1653,6 +1660,8 @@ The Engine service shall support:
 * watchdog integration where implemented.
 
 Repeated failure shall not produce an uncontrolled infinite restart loop that masks a persistent unsafe condition.
+
+The initial implementation (restart policy, start limit, readiness, the systemd watchdog and its limits) is described in "Engine Service (Initial Implementation)".
 
 
 === API Service Supervision
@@ -1692,7 +1701,8 @@ A possible runtime location is:
 /run/aquaponics/
 ----
 
-The final path remains an implementation decision.
+Under the Engine service the endpoint is `/run/aquaponics/engine.sock` (see "Engine Service (Initial Implementation)").
+The endpoint used by the API remains to be decided with the API.
 
 The IPC endpoint shall not be exposed more broadly than required.
 
@@ -1710,7 +1720,7 @@ It does not provide:
 * the durable operational command journal or any operational state database;
 * state reconciliation after a restart;
 * a REST API;
-* `systemd` installation, automatic restart or watchdog integration.
+* an installed production service: the reviewed `systemd` unit exists and can be installed manually (see "Engine Service (Initial Implementation)"), but it is not installed on the controller.
 
 It must not be composed with real hardware adapters in this form.
 
@@ -1788,7 +1798,7 @@ A phase that took longer than its limit is logged as a `WARNING` naming the phas
 Overruns of a phase that stays slow are subject to repeat suppression (category `phase-overrun:<PHASE>`, see "Diagnostic Logging (Initial Implementation)").
 An overrun is not a lifecycle audit event.
 A cycle that took longer than the cycle interval is followed immediately by the next one; missed cycles are not caught up.
-A phase that blocks indefinitely is not detected by the Engine itself; that is left to future supervision and watchdog integration.
+A phase that blocks indefinitely is not detected by the Engine itself. Under the service, the systemd watchdog detects it, because no heartbeat follows (see "Engine Service (Initial Implementation)").
 
 A shutdown request or a handled signal received during a cycle lets that cycle finish all its phases; no further cycle starts.
 Requests answered while the Engine idles run no phase.
@@ -1819,7 +1829,7 @@ It is not interpreted as an administrative request.
 An exception in an operating-cycle phase ends that cycle: its remaining phases do not run and it is not counted.
 |1
 
-|Command-line or configuration error
+|Command-line or configuration error, including a cycle interval too long for the service watchdog or a malformed service-manager variable
 |Reported on standard error. The Engine does not start.
 |2
 
@@ -1836,16 +1846,16 @@ An exception in an operating-cycle phase ends that cycle: its remaining phases d
 |(none)
 
 |Other signals, for example `SIGHUP` when a terminal is closed
-|Not supported: the default action ends the process without cleanup, like `SIGKILL`. The stale endpoint is replaced at the next start.
+|Not supported: the default action ends the process without cleanup, like `SIGKILL`. The stale endpoint is replaced at the next start. Under the service, a death by `SIGHUP` is restarted (`RestartForceExitStatus=SIGHUP`).
 |(set by the signal)
 |===
 
 Only `SIGINT` and `SIGTERM` are supported.
 The first stop reason wins: a repeated signal, or a signal after an operator STOP, changes nothing and is not recorded again.
-A shutdown that blocks (for example on storage) is not shortened by another signal; escalation is `SIGKILL`, or the service manager's stop timeout (Issue #9).
+A shutdown that blocks (for example on storage) is not shortened by another signal; escalation is `SIGKILL`, which the service manager sends after its 10-second stop timeout (`TimeoutStopSec`).
 
 Exit status 0 after a handled signal reports that the shutdown completed, not who requested it.
-Future service supervision shall not treat it as proof of operator authorization.
+The service treats it as a deliberate stop and does not restart the Engine; it is not proof of operator authorization.
 
 The `ape` client reports through its exit status:
 
@@ -2005,14 +2015,18 @@ A repeated request during shutdown receives `shutdown_already_initiated`, if it 
 The word "accepted" is deliberately not used: it is reserved for durable acceptance of operational commands (see "Engine Ingress").
 
 Manual verification of cross-user denial:: Automated tests cannot assume a second Linux account.
-To verify it by hand, with the Engine running as user A and a second account B:
+To verify it by hand, run the Engine as user A and make the attempt as a second account B.
+`sudo` does not search a virtual environment (its `PATH` is its own `secure_path`), so `ape` is named by an absolute path that B can execute: for example `/opt/aquaponics/venv/bin/ape` where the service is installed, or the `ape` of a virtual environment B can read.
+A's development environment usually lies in A's home directory, which B often cannot enter.
 
 [source,text]
 ----
-$ sudo -u B ape -x --socket /path/to/engine.sock
+$ sudo -u B /path/to/venv/bin/ape -x --socket /path/to/engine.sock
 ape: permission denied for /path/to/engine.sock        (exit status 4)
 ----
 
+The result counts only if it is `ape`'s own refusal, as above: exit status 4 with `ape: permission denied`.
+A shell error such as "command not found" (127) or "Permission denied" on the executable (126) means B could not run `ape` at all, and nothing was tested.
 The Engine must keep running, and its lifecycle audit history must contain no `STOP_REQUEST_RECEIVED` for the attempt.
 
 === Lifecycle and IPC Failure Handling
@@ -2069,7 +2083,7 @@ Any other `OSError`, even from those operations (for example `EBADF`, `EINVAL`, 
 It is a single attempt within the usual 0.2 s write deadline, it never contains the exception's type, text or traceback, and a failure to send it never replaces the original exception, which then takes the fail-stop path unchanged.
 The exception details go only to the diagnostic log (as an `ERROR` with traceback) and to the `ENGINE_FAILURE` record (exception type and message), as before.
 Interruptions (`KeyboardInterrupt`, `SystemExit`) are never turned into an answer.
-`accept()` failures keep their existing handling: no further connections in that call, the 0.25 s idle backoff, and repeat suppression by category.
+`accept()` failures on the listening socket follow the same principle (Issue #9, D14). Only these are contained: descriptor or memory exhaustion (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`) and a client that went away while queued (`ECONNABORTED`). For them nothing has changed: no further connections in that call, the 0.25 s idle backoff, and repeat suppression by category. An empty queue (`EAGAIN`) is not an error. *Any other `accept()` error* (for example `EBADF`, `EINVAL`, `ENOTSOCK`) means the listener itself is broken: it is an Engine failure (fail-stop, exit status 1), and under the service the Engine is restarted with a fresh endpoint, instead of carrying on, heartbeat included, without administrative access. The set is the named constant `CONTAINED_ACCEPT_ERRNOS` in `local_ingress.py`, checked by the tests.
 
 Connecting while the Engine is busy:: A Unix socket does not make a client wait for room in a full connection queue: connecting fails at once (`EAGAIN`).
 `ape` treats this as "the Engine is alive but busy" and retries *connecting only*, with a short backoff (10 ms, doubling up to 100 ms), until its timeout; then it exits with status 5.
@@ -2081,10 +2095,11 @@ A missing endpoint or nothing listening is reported at once with exit status 3, 
 Duplicate requests:: The correlation identifier is not an idempotency key, and the Engine does not deduplicate requests.
 Queries (`ping`, `echo`) are safe to repeat.
 A STOP repeated within one Engine execution is idempotent: it is answered `shutdown_already_initiated` and audited each time, without a second shutdown.
-A STOP sent after the Engine has been restarted is a new STOP for the new execution; stopping only a specific execution is left to Issue #9, together with automatic restarts.
+A STOP sent after the Engine has been restarted is a new STOP for the new execution. Stopping only a specific execution is not supported (future work). Under the service, a STOP is never undone by an automatic restart.
 
 Descriptor exhaustion:: If the Engine runs out of file descriptors (or kernel memory) while accepting a connection, it stops accepting for that call, ignores the socket for 0.25 s while idle so that it cannot spin, and logs the condition under its repeat-suppression category.
 Waiting clients stay queued and are served automatically once the condition clears.
+While the condition lasts, the Engine keeps completing operating cycles and sending its service heartbeat: the heartbeat does not cover IPC availability (see "Known Limitations" under "Engine Service (Initial Implementation)").
 
 === Diagnostic Logging (Initial Implementation)
 
@@ -2117,7 +2132,7 @@ An Engine failure is logged at `ERROR` with its traceback.
 
 Destinations and storage:: Two destinations, with different storage guarantees:
 +
-* Standard error, always. The Engine does not bound what is kept: that depends on whatever captures standard error. A terminal keeps nothing; redirecting standard error to a file in the shell gives an *unbounded* file and is not recommended; under `systemd`, journald keeps it according to its own configuration (persistence, size and rate limits), which belongs to the service setup.
+* Standard error, always. The Engine does not bound what is kept: that depends on whatever captures standard error. A terminal keeps nothing; redirecting standard error to a file in the shell gives an *unbounded* file and is not recommended; under `systemd`, journald keeps it according to its own configuration (persistence, size and rate limits), which belongs to the service setup. When standard error is the journald stream, every line carries its syslog priority prefix (`<3>` error, `<4>` warning, `<6>` info, `<7>` debug), so that `journalctl -p` selects by severity; elsewhere lines are unchanged (see "Journal" under "Engine Service (Initial Implementation)").
 * The file given with `--log-file PATH`, optionally. The Engine bounds it: it is rotated at 5 MiB, and 4 rotated files are kept (`PATH.1` to `PATH.4`), at most 25 MiB in total. Sizes are counted in bytes. Only a single record larger than 5 MiB, written to an empty file, can make a file larger. If rotation fails, the record is dropped instead of appended beyond the limit. The directory is created with mode `0700` if it does not exist; an existing directory, and every parent directory, is left as it is. The file is created with mode `0600`. The file is opened safely, at startup and after every rotation: a symbolic link at the file's path is not followed; only a regular file with a single name is accepted (a named pipe, a device or a directory is refused, without blocking, and so is a file with more than one hard link, before anything about it is changed); an existing file with other permissions is restricted to `0600` with a warning, and refused if that is not permitted (for example because it belongs to another user). The file is not `fsync`-ed: recent lines can be lost on power loss.
 +
 No remote or external logging service is used.
@@ -2163,7 +2178,7 @@ Signal handlers do not log: they only set the stop flag and wake the idle wait.
 
 Synchronous logging limitation:: Logging is synchronous; no thread or process writes logs on the Engine's behalf.
 The time spent writing a record is therefore not strictly bounded: a reader of standard error that stops reading (a full pipe, a paused terminal, a stalled journald) or slow or failing storage can block the Engine thread, and while it is blocked nothing else happens, including request handling and the operating-cycle schedule.
-In-process phase timing cannot detect this; detection belongs to the future health heartbeat and watchdog.
+In-process phase timing cannot detect this; under the service, a block longer than the watchdog timeout ends in a watchdog restart.
 *This limitation must be resolved before physical equipment control is enabled* (see "Logging" in the architecture chapter).
 
 === Lifecycle Audit Persistence
@@ -2213,6 +2228,385 @@ Durability and its limits::
 Lifecycle audit history is not a diagnostic log (see "Logging"), not the durable command journal, and not a source of pending work.
 
 
+=== Engine Service (Initial Implementation)
+
+This section documents the first implementation of "systemd Deployment" and "Engine Service Supervision" for the Engine (Issue #9).
+The Engine is still a development foundation: it controls no hardware.
+Supervision recovers the *process*; a restart never means that the installation is safe, and no physical output may be enabled merely because supervision works.
+
+The reviewed deployment files are in the repository:
+
+[cols="2,3",options="header"]
+|===
+|File |Installed as
+
+|`deploy/systemd/aquaponics-engine.service`
+|`/etc/systemd/system/aquaponics-engine.service`
+
+|`deploy/sysusers.d/aquaponics.conf`
+|`/etc/sysusers.d/aquaponics.conf`
+|===
+
+Every contract directive of the unit is checked by `tests/test_systemd_unit.py`; changing one requires the same review as the original decisions (Issue #9, D1 to D16).
+There is no install script and no package: installation is the manual procedure below.
+An offline release bundle remains future work (see "Release Bundle").
+
+==== Service Identity, Paths and Permissions
+
+[cols="2,2,1,3",options="header"]
+|===
+|Item |Path or value |Owner, mode |Notes
+
+|Service
+|`aquaponics-engine.service`
+|
+|`Type=notify`. Started at boot only if enabled.
+
+|Service user and group
+|`aquaponics` (system user, no login shell, no home directory)
+|
+|Created by `systemd-sysusers`. Not `DynamicUser`: the lifecycle audit needs a stable owner, and the IPC peer check is based on the user ID.
+
+|Executable
+|`/opt/aquaponics/venv/bin/aquaponics-engine`
+|`root`, read-only to the service
+|A virtual environment owned by root. Bytecode is compiled at installation (`pip` does this by default); the service does not write it (`PYTHONDONTWRITEBYTECODE=1`).
+
+|IPC endpoint
+|`/run/aquaponics/engine.sock`
+|`aquaponics`, directory `0700`, socket `0600`
+|`RuntimeDirectory`: memory-backed, created by systemd before each start and removed when the service stops, so no stale socket or lock survives a stop or a reboot. It satisfies the directory validation of "Local Administrative IPC (Initial Implementation)" without any correction.
+
+|Lifecycle audit history
+|`/var/lib/aquaponics/lifecycle_audit.jsonl`
+|`aquaponics`, directory `0700`, file `0600`
+|`StateDirectory`: *persistent*. Stopping, disabling or removing the service never deletes it (see "Teardown").
+
+|Diagnostic log
+|journald, identifier `aquaponics-engine`
+|
+|The service does not use `--log-file`.
+
+|Cycle interval
+|`1.0` seconds
+|
+|At most 3.5 s with the 10 s watchdog (see "Readiness and Watchdog").
+|===
+
+`UMask=0077` applies to everything the service creates.
+Nothing outside the runtime and state directories is writable by the service (`ProtectSystem=strict`).
+
+Security restrictions:: The unit sets: no capabilities (`CapabilityBoundingSet=`, `AmbientCapabilities=`), `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, *`PrivateDevices=yes`*, the kernel, control-group, clock and hostname protections, `RestrictAddressFamilies=AF_UNIX`, `IPAddressDeny=any`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`, `LockPersonality=yes`, `SystemCallArchitectures=native` and `SystemCallFilter=@system-service`.
+`AF_UNIX` covers everything the Engine uses: the IPC socket, the idle-wait socket pair, the journald stream and the systemd notification socket.
+`MemoryDenyWriteExecute` is deliberately not set, so that future native extensions are not blocked.
++
+*Device access is disabled in Milestone 1* (`PrivateDevices=yes`): the service sees no physical devices.
+GPIO, I²C or any other device access requires a separate security review before this directive is changed (an explicit `DeviceAllow=` and supplementary groups instead).
++
+*Offline:* the service has no network access and no network dependency (no `network-online.target`); it starts without the network, the API, a login or a desktop session.
+
+Administrative access:: The IPC directory belongs to `aquaponics` and is `0700`.
+An administrator uses `root` (`sudo /opt/aquaponics/venv/bin/ape --socket /run/aquaponics/engine.sock ...`) or the service user (`sudo -u aquaponics /opt/aquaponics/venv/bin/ape --socket /run/aquaponics/engine.sock ...`); both are authorized by default (the Engine's own user and root, see "Local Administrative IPC (Initial Implementation)").
+`ape` is installed only in the service's virtual environment, and `sudo` searches only its own fixed path (`secure_path`), so `ape` is always called by its absolute path `/opt/aquaponics/venv/bin/ape`.
+An administrative group is future work.
+`systemctl` remains an administrative path that does not depend on the IPC endpoint.
+
+==== Installation
+
+On a non-production workstation, or on the controller when installation there has been authorized.
+Run from a checkout of the reviewed release, with that release's commit checked out.
+Python interpreter:: The build and the service's virtual environment need Python 3.11 or later, and both use the *same* interpreter.
+The operator chooses an installed interpreter and names it by its *absolute path* (for example `/usr/bin/python3.12`); the default `python3` is not relied on, and it is not changed.
+On Ubuntu 22.04 `python3` is 3.10, so a newer interpreter must be installed alongside it (with its `venv` module: on Debian and Ubuntu the `python3.X-venv` package).
+Because the path is absolute and expanded by the operator's own shell, `sudo` runs exactly that interpreter whatever its own `PATH` (`secure_path`) is.
+Its version is checked before anything is installed, and the service environment's version is checked again after it is created.
+
+Build as the ordinary user, install as `root`:: The package is built as the ordinary user, from an export of the committed revision, and only the resulting wheel is installed as `root`.
+Nothing is built as `root`, and nothing is written into the working repository: an uncommitted change cannot slip into the installation, and the checkout gets no `root`-owned build files.
+The build uses a temporary virtual environment of the chosen interpreter, so it neither depends on nor changes that interpreter's own packages.
+Building lets `pip` fetch the build requirements (`setuptools`) unless they are already present; an offline build needs them provisioned in advance.
+Installing the wheel needs no network: the package has no runtime dependencies.
+
+[source,text]
+----
+$ python=/usr/bin/python3.12          # as the ordinary user: an installed Python 3.11 or later, by absolute path
+$ check='import sys; sys.exit(0 if sys.version_info >= (3, 11) else "Python 3.11 or later is required, not " + sys.version.split()[0])'
+$ "$python" -c "$check"               # stop here if it reports an error
+$ build=$(mktemp -d)
+$ git archive --format=tar --prefix=source/ HEAD | tar -x -C "$build"
+$ "$python" -m venv "$build/venv"
+$ "$build/venv/bin/python" -m pip wheel --no-deps --wheel-dir "$build/wheel" "$build/source"
+$ sudo install -m 0644 deploy/sysusers.d/aquaponics.conf /etc/sysusers.d/aquaponics.conf
+$ sudo systemd-sysusers /etc/sysusers.d/aquaponics.conf
+$ sudo "$python" -m venv /opt/aquaponics/venv
+$ sudo /opt/aquaponics/venv/bin/python -c "$check"
+$ sudo /opt/aquaponics/venv/bin/python -m pip install --no-index --no-deps "$build"/wheel/aquaponics_controller-*.whl
+$ rm -r "$build"
+$ sudo install -m 0644 deploy/systemd/aquaponics-engine.service /etc/systemd/system/aquaponics-engine.service
+$ sudo systemctl daemon-reload
+$ sudo systemctl start aquaponics-engine
+----
+
+`systemctl enable aquaponics-engine` makes it start at boot; do this only where boot start is wanted.
+The runtime and state directories are created by systemd; do not create them by hand.
+
+==== Operating the Service
+
+[cols="2,3",options="header"]
+|===
+|Command |Effect
+
+|`systemctl status aquaponics-engine`
+|State, main process, restart count, recent journal lines.
+
+|`sudo /opt/aquaponics/venv/bin/ape --ping --socket /run/aquaponics/engine.sock`
+|The Engine answers, with its execution identifier and completed cycles.
+
+|`sudo /opt/aquaponics/venv/bin/ape -x --socket /run/aquaponics/engine.sock`
+|Operator STOP: controlled shutdown, exit status 0. The service becomes inactive and is *not* restarted.
+
+|`sudo systemctl stop aquaponics-engine`
+|`SIGTERM`: controlled shutdown, exit status 0, not restarted. After 10 s (`TimeoutStopSec`) systemd sends `SIGKILL`.
+
+|`sudo systemctl start aquaponics-engine`
+|Starts a new execution (after either kind of stop).
+
+|`sudo systemctl restart aquaponics-engine`
+|Stop, then start: a new execution.
+
+|`systemctl show aquaponics-engine -p NRestarts,Result,ExecMainStatus`
+|Automatic restarts so far, and how the last execution ended.
+|===
+
+There is no `ExecStop`: stopping is `SIGTERM` only, which the Engine handles as described in "Running the Engine in Development".
+A STOP after a restart is a new STOP for the new execution; stopping only a specific execution is not supported (future work).
+
+==== Restart and Signal Outcomes
+
+`Restart=on-failure`, `RestartSec=5s`, `RestartPreventExitStatus=2 3 4`, `RestartForceExitStatus=SIGHUP`, and at most 5 starts within 300 s (`StartLimitBurst=5`, `StartLimitIntervalSec=300`).
+Verified on systemd 249 unless marked otherwise.
+
+[cols="3,1,2,1,2",options="header"]
+|===
+|End of an execution |Engine exit |systemd result |Restarted |Final audit events
+
+|`ape -x` (operator STOP)
+|0
+|success
+|No
+|Yes, `OPERATOR_STOP`
+
+|`systemctl stop`, reboot, shutdown
+|0
+|success
+|No
+|Yes, `SIGNAL`
+
+|`SIGTERM` or `SIGINT` from anything else (handled)
+|0
+|success
+|No (a deliberate stop)
+|Yes, `SIGNAL`
+
+|`SIGHUP` (not handled)
+|signal
+|success, forced restart
+|Yes (`RestartForceExitStatus=SIGHUP`)
+|No
+
+|Engine failure (fail-stop), including an unclassified `accept()` error and a failed readiness notification
+|1
+|exit-code
+|Yes
+|Yes, `FAILURE`
+
+|`SIGKILL`, out-of-memory kill, `SIGSEGV`, `SIGQUIT`
+|signal
+|signal
+|Yes
+|No
+
+|Watchdog timeout (the Engine hung or was frozen)
+|`SIGABRT`
+|watchdog
+|Yes
+|No; the Python stack is in the journal
+
+|READY not sent within 30 s (`TimeoutStartSec`)
+|0 after `SIGTERM`
+|timeout
+|Yes
+|Yes, `SIGNAL`
+
+|Configuration error (including a cycle interval too long for the watchdog)
+|2
+|exit-code
+|No
+|None
+
+|Another Engine owns the endpoint
+|3
+|exit-code
+|No
+|`ENGINE_FAILURE`
+
+|Deliberate stop, but cleanup failed
+|4
+|exit-code
+|No
+|Yes
+
+|Stop not finished within 10 s
+|killed
+|timeout
+|No (it was a stop)
+|No
+
+|More than 5 starts within 300 s
+|
+|failed ("Start request repeated too quickly")
+|No: failed until `systemctl reset-failed`
+|
+|===
+
+A deliberate stop (`ape -x`, `systemctl stop`, a handled `SIGTERM`) exits 0 and is never restarted.
+A restart is never a sign of success: the reason is in the journal and, where the Engine could record it, in the lifecycle audit history.
+An execution killed by a signal or the watchdog has no `SHUTDOWN_*` records; the next execution does not yet detect this (future work).
+
+==== Readiness and Watchdog
+
+The Engine reports to systemd through the notification socket (`NOTIFY_SOCKET`), from its main flow only: no thread and no timer.
+Each report is one non-blocking send and is never retried, so reporting can never block the Engine.
+
+`READY=1`:: Sent once, at the end of startup: after `ENGINE_RUNNING` is recorded and the IPC endpoint listens.
+If it cannot be sent, startup fails (fail-stop): `ENGINE_FAILURE` with phase `startup`, cleanup, exit status 1, and systemd restarts the service within the start limit.
+Without READY, systemd would end the start attempt after 30 s anyway.
+
+`WATCHDOG=1`:: The heartbeat.
+Sent only after an operating cycle has completed all its phases and been counted; never after a phase raised, never from the idle wait or idle-time request servicing, never after `STOPPING=1`.
+At most once per quarter of the *actual* watchdog timeout (`WATCHDOG_USEC`, set by systemd from `WatchdogSec=10s`), so at most every 2.5 s.
+A failed send is logged as a `WARNING` (repeat-suppression category `service-notify-failed`) and is otherwise ignored: if heartbeats really stop, the watchdog acts.
+
+`STOPPING=1`:: Sent once at the start of every shutdown, whatever its reason. A failed send is logged and the shutdown continues.
+If startup failed before the notification socket was opened (for example exit status 3, another Engine owns the endpoint), nothing is sent and nothing is logged about it: systemd learns the outcome from the exit status.
+
+Activation:: Without `NOTIFY_SOCKET` (a terminal, the tests) nothing is sent and the Engine behaves exactly as before.
+The watchdog is active only if `WATCHDOG_USEC` is also set and `WATCHDOG_PID` is unset or the Engine's own process ID; `WATCHDOG_PID` never disables READY or STOPPING.
+A malformed variable is a configuration error (exit status 2).
+
+Interval rule:: Cycle interval + 1.5 s (the worst-case cycle from the phase time limits) must be at most half the watchdog timeout.
+Otherwise the Engine refuses to start (exit status 2).
+With `WatchdogSec=10s` the cycle interval may be at most 3.5 s; the longest possible gap between heartbeats then stays below three quarters of the timeout.
+
+Watchdog timeout:: systemd sends `SIGABRT`. With `PYTHONFAULTHANDLER=1` the Engine's Python stack (where it hung) is written to the journal (`Fatal Python error: Aborted`), and the service is restarted.
+
+What the heartbeat means:: Only that the Engine's single control loop completed a full operating cycle recently.
+It does *not* show that the administrative IPC is reachable, that any request was served, or that the physical installation is safe: six of the seven phases are still placeholders.
+Once real control work exists, the heartbeat shall follow successful critical work (see "Meaningful Engine Heartbeat").
+The systemd watchdog does not cover a frozen operating system; the Linux and hardware watchdogs are not configured (future work).
+
+==== Journal
+
+When standard error is the journald stream (`JOURNAL_STREAM` matches it), every line carries its syslog priority (`<3>` error, `<4>` warning, `<6>` info, `<7>` debug), tracebacks included; journald stores it as the entry's priority and removes the prefix.
+Elsewhere the lines are unchanged.
+
+[source,text]
+----
+$ journalctl -u aquaponics-engine -b                 # this boot
+$ journalctl -u aquaponics-engine -p err             # failures only, with their tracebacks
+$ journalctl -u aquaponics-engine -p warning -f      # warnings and worse, following
+$ journalctl -u aquaponics-engine | grep 'exec=<id>' # one execution (see the lifecycle audit history)
+----
+
+Every Engine line carries the execution identifier (`exec=`), the same value as the lifecycle audit history, so executions before and after a restart can be told apart.
+systemd adds its own lines about the unit (start, `Watchdog timeout`, `Main process exited, code=..., status=...`, `Scheduled restart job`).
+
+The journal configuration belongs to the service setup, not to the Engine.
+To keep the journal across reboots, set `Storage=persistent` in `/etc/systemd/journald.conf` (or create `/var/log/journal`) and bound it with `SystemMaxUse=`; record the result in the IT System Reproduction chapter ("Logging").
+journald's rate limit (`RateLimitIntervalSec`, `RateLimitBurst`) can drop lines from a very noisy service; it then says so in the journal.
+
+==== Troubleshooting
+
+[cols="2,3",options="header"]
+|===
+|Symptom |Meaning and action
+
+|"Start request repeated too quickly", the service stays failed
+|More than 5 starts within 300 s (on systemd 249 `Result` keeps the last failure, for example `exit-code`; `NRestarts` counts the refused restart too). Find the cause in the journal first (`-p err`); then `systemctl reset-failed aquaponics-engine` and start it again. Resetting without understanding the cause only repeats the loop.
+
+|`Watchdog timeout` in the journal, `status=6/ABRT`
+|The Engine stopped completing operating cycles for 10 s (hung or frozen). The Python stack below `Fatal Python error: Aborted` shows where. Investigate; a watchdog shall not be used to hide a recurring failure.
+
+|Exit status 2 at start
+|Configuration error, for example a cycle interval too long for the watchdog. Not restarted. The journal line says what is wrong.
+
+|Exit status 3 at start
+|Another Engine owns the endpoint. Not restarted.
+
+|`ape` exit status 3
+|The service is not running (or is shutting down). Check `systemctl status`.
+
+|`ape` exit status 4
+|Not run as `root` or `aquaponics`.
+
+|Inactive after `ape -x`
+|Intended: an operator STOP is not undone. Start it again with `systemctl start`.
+|===
+
+==== Teardown
+
+Removing or disabling the service *preserves persistent state*: the lifecycle audit history in `/var/lib/aquaponics/` is kept by default.
+
+[source,text]
+----
+$ sudo systemctl disable --now aquaponics-engine     # or: systemctl stop, if it was never enabled
+$ sudo rm /etc/systemd/system/aquaponics-engine.service
+$ sudo systemctl daemon-reload
+$ sudo systemctl reset-failed aquaponics-engine
+$ sudo rm -r /opt/aquaponics/venv                    # optional: the virtual environment holds no state
+----
+
+* Runtime resources need no action: systemd removes `/run/aquaponics` when the service stops.
+* `/var/lib/aquaponics/` and the audit records are *not* removed. Do not use `systemctl clean --what=state` or remove the directory as part of a teardown.
+* Keep the `aquaponics` user (and `/etc/sysusers.d/aquaponics.conf`) while the state directory exists, so that the records keep their owner. A reinstallation finds and continues the same audit history.
+
+Deleting persistent state is a separate, deliberate operator action, never part of a teardown.
+It is permitted only on a non-production workstation, after confirming that the audit records are no longer needed, and preferably after archiving them (for example `sudo tar -C /var/lib -czf aquaponics-state-<date>.tar.gz aquaponics`).
+Only then: `sudo rm -r /var/lib/aquaponics`, and, if wanted, remove the user (`sudo userdel aquaponics`, `sudo rm /etc/sysusers.d/aquaponics.conf`).
+
+==== Validation
+
+Three tiers (Issue #9, D16):
+
+. *Deterministic tests*, always run (see "Running the Automated Tests"): the notification contract against a fake notification socket, the readiness failure path, the interval rule, heartbeats only after completed cycles, the `accept()` classification, journald priorities, and every contract directive of the unit, including `systemd-analyze verify` where it is available.
+. *User-level systemd integration tests*, opt-in: `AQUAPONICS_SYSTEMD_TESTS=1 python -m pytest tests/test_systemd_integration.py`. They need a running systemd user manager (`systemctl --user`) and take a few minutes. Each test runs the Engine in a transient user unit (`systemd-run --user`, named `aquaponics-test-*`) built from the production unit: every behaviour directive is kept, only the identity and sandboxing directives are dropped. They cover READY and `ape --ping`; `ape -x` and `systemctl stop` not restarted; `SIGKILL`, `SIGHUP` and an Engine failure restarted, with a new execution on the same endpoint; exit statuses 2 and 3 not restarted; the start limit; a frozen and a hung Engine killed by the watchdog, with the Python stack in the journal; and execution identifiers and termination causes in the journal. Nothing is installed or enabled; teardown stops and resets each unit and removes its own directories.
++
+*These tests do not validate* the production service identity (`aquaponics`), system-level sandboxing (including `PrivateDevices=yes`), start at boot, or Raspberry Pi behaviour.
+. *Manual system-level demonstration*, below.
+
+==== Manual System-Level Demonstration
+
+On a non-production workstation with `sudo`, never on the live installation.
+
+. Install as described in "Installation".
+. `sudo systemctl start aquaponics-engine`; `systemctl status aquaponics-engine`; `sudo /opt/aquaponics/venv/bin/ape --ping --socket /run/aquaponics/engine.sock`.
+. `sudo /opt/aquaponics/venv/bin/ape -x --socket /run/aquaponics/engine.sock`: the service is inactive and not restarted (`NRestarts=0`).
+. Start it again. `sudo systemctl kill -s KILL aquaponics-engine`: restarted after 5 s with a new execution identifier. Then `-s HUP`: restarted. Then `-s STOP`: after 10 s the watchdog kills it and it is restarted.
+. `sudo systemctl stop aquaponics-engine`: graceful, exit status 0.
+. `journalctl -u aquaponics-engine -p err` and `systemd-analyze security aquaponics-engine` (the exposure score and every unmet restriction are worth recording).
+. Check the audit history: `sudo tail /var/lib/aquaponics/lifecycle_audit.jsonl` shows each execution; those ended by a signal or the watchdog have no `SHUTDOWN_*` records.
+. Tear down as described in "Teardown", which keeps `/var/lib/aquaponics/`.
+
+==== Known Limitations
+
+* *IPC availability is not part of the heartbeat.* Two cases leave the Engine running, and sending heartbeats, while administrative access is unavailable: persistent descriptor or memory exhaustion (contained and rate-limited by design), and the socket path removed from outside the Engine. `systemctl stop` and `restart` still work. Treating IPC availability as part of Engine health is a separate issue.
+* The heartbeat does not show physical safety (see "What the heartbeat means").
+* Synchronous diagnostic logging can block (see "Diagnostic Logging (Initial Implementation)"); a journald stall longer than the watchdog timeout ends in a watchdog restart.
+* An unclean previous execution is not detected at startup; failure notifications (`OnFailure=`) are not configured; restarts use a fixed 5 s delay (graduated backoff needs systemd 254 or later).
+* The Linux and hardware watchdogs are not configured; the API service does not exist yet.
+* Verified on systemd 249 (Ubuntu 22.04) with user-level units. Raspberry Pi OS (bookworm, systemd 252) is the target but has not been verified on the controller hardware.
+
+
 === Health Monitoring
 
 Local health monitoring should eventually track:
@@ -2260,6 +2654,9 @@ heartbeat refreshed
 ----
 
 A deadlocked but still-existing process shall eventually be detectable as unhealthy.
+
+Initial implementation: the systemd watchdog heartbeat is sent after each completed operating cycle (see "Readiness and Watchdog" under "Engine Service (Initial Implementation)").
+It detects a hung or frozen Engine, but while the operating cycle performs no real control work it shows only that the control loop progresses, not that critical work succeeds.
 
 
 === Runtime Diagnostics
@@ -2570,6 +2967,9 @@ Testing should distinguish:
 * watchdog-triggered restart.
 
 A watchdog shall not be used merely to hide an unexplained recurring failure.
+
+The systemd watchdog of the Engine service is tested by the opt-in user-level integration tests (a frozen and a hung Engine) and by the manual demonstration; see "Validation" under "Engine Service (Initial Implementation)".
+The operating-system hang (Linux and hardware watchdogs) is not covered yet.
 
 
 === Release Validation

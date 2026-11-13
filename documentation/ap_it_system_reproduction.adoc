@@ -194,9 +194,15 @@ Example structure:
 [source,text]
 ----
 Administrative user:       TBD
-Engine service user:       aquaponics / TBD
+Engine service user:       aquaponics (system user and group, no login shell, no home directory;
+                           created by systemd-sysusers from deploy/sysusers.d/aquaponics.conf)
 API service user:          separate from the Engine service user / TBD
 ----
+
+The `aquaponics` account owns the Engine's runtime and state directories and nothing else.
+It belongs to no additional groups and has no device access (Issue #9).
+Administrators use `root` (`sudo`) or `sudo -u aquaponics` for the administrative IPC; an administrative group is not defined yet.
+Keep the account while `/var/lib/aquaponics/` exists, so that the lifecycle audit records keep their owner.
 
 The Engine service user shall not have unrestricted privileges unless specifically required.
 
@@ -352,6 +358,40 @@ Unless superseded by a documented decision:
 
 Record the actual final paths in this document.
 
+Paths used by the Engine service (Issue #9), as installed by "Engine Service (Initial Implementation)" in the Development and Operations chapter:
+
+[cols="3,2,1,3",options="header"]
+|===
+|Path |Owner |Mode |Lifetime
+
+|`/opt/aquaponics/venv/`
+|`root`
+|`0755`
+|Installed software; read-only to the service. Replaced by a reinstallation.
+
+|`/etc/systemd/system/aquaponics-engine.service`
+|`root`
+|`0644`
+|Installed unit (copy of `deploy/systemd/aquaponics-engine.service`).
+
+|`/etc/sysusers.d/aquaponics.conf`
+|`root`
+|`0644`
+|Service account declaration.
+
+|`/run/aquaponics/` (`engine.sock`, `engine.sock.lock`)
+|`aquaponics`
+|`0700` (socket `0600`)
+|Runtime only: created by systemd at each start, removed when the service stops and at reboot.
+
+|`/var/lib/aquaponics/` (`lifecycle_audit.jsonl`)
+|`aquaponics`
+|`0700` (file `0600`)
+|*Persistent.* Preserved when the service is stopped, disabled, removed or reinstalled. Deleted only by a separate, deliberate operator action.
+|===
+
+The `releases/` and `current/` layout above belongs to the future release process and is not used yet.
+
 === Configuration
 
 Production configuration shall be stored separately from application code.
@@ -467,13 +507,27 @@ Record:
 
 [source,text]
 ----
-Service name:       aquaponics-engine.service / TBD
-Unit path:          TBD
-Service user:       TBD
-Executable:         TBD
-Restart policy:     TBD
-Watchdog:           TBD
+Service name:       aquaponics-engine.service (Type=notify)
+Unit path:          /etc/systemd/system/aquaponics-engine.service
+                    (source: deploy/systemd/aquaponics-engine.service)
+Service user:       aquaponics:aquaponics
+Executable:         /opt/aquaponics/venv/bin/aquaponics-engine
+                    --socket /run/aquaponics/engine.sock
+                    --audit-file /var/lib/aquaponics/lifecycle_audit.jsonl
+                    --cycle-interval 1.0
+Operator CLI:       /opt/aquaponics/venv/bin/ape --socket /run/aquaponics/engine.sock
+                    (absolute path: sudo's secure_path does not include the virtual environment)
+Installed from:     wheel built by the ordinary user from commit TBD (record the commit hash)
+Restart policy:     Restart=on-failure, RestartSec=5s, RestartPreventExitStatus=2 3 4,
+                    RestartForceExitStatus=SIGHUP, at most 5 starts within 300 s
+Start / stop:       TimeoutStartSec=30s (READY required), TimeoutStopSec=10s (SIGTERM, then SIGKILL)
+Watchdog:           WatchdogSec=10s, application heartbeat after completed operating cycles
+Sandbox:            no capabilities, no network (AF_UNIX only), no devices (PrivateDevices=yes)
+Enabled at boot:    TBD (record whether `systemctl enable` was run)
 ----
+
+Installation, operation, teardown and the manual demonstration are described in "Engine Service (Initial Implementation)" in the Development and Operations chapter.
+Removing the service preserves `/var/lib/aquaponics/`.
 
 The Engine shall start without:
 
@@ -511,6 +565,9 @@ Owner:              TBD
 Group:              TBD
 Permissions:        TBD
 ----
+
+The Engine's administrative endpoint under the service is `/run/aquaponics/engine.sock` (Unix domain socket, owner `aquaponics`, directory `0700`, socket `0600`).
+The API's access to the Engine remains to be decided with the API.
 
 A Unix domain socket is a preferred candidate for the single-machine deployment.
 
@@ -713,11 +770,12 @@ Document whether watchdog support is enabled.
 
 [source,text]
 ----
-Application heartbeat: TBD
-systemd watchdog:      TBD
-Linux watchdog:        TBD
-Hardware watchdog:     TBD
-Timeouts:              TBD
+Application heartbeat: WATCHDOG=1 after each completed operating cycle, at most every 2.5 s
+                       (shows control-loop progress only; not IPC availability or physical safety)
+systemd watchdog:      enabled, WatchdogSec=10s, restart on timeout (SIGABRT, Python stack in the journal)
+Linux watchdog:        not configured
+Hardware watchdog:     not configured
+Timeouts:              WatchdogSec=10s, TimeoutStartSec=30s, TimeoutStopSec=10s
 ----
 
 Watchdog behaviour must be tested before production reliance.
@@ -736,6 +794,18 @@ Document:
 Logging must remain available after ordinary reboot where practical.
 
 The Engine writes its diagnostic logs to standard error and does not bound what is kept there; under `systemd`, retention and persistence are those of the journal configuration recorded here.
+Under the service, the lines are tagged `aquaponics-engine` and carry their syslog priority, so `journalctl -u aquaponics-engine -p err` selects failures.
+
+To keep the journal across reboots (record the values used):
+
+[source,text]
+----
+/etc/systemd/journald.conf:   Storage=persistent      (or create /var/log/journal)
+                              SystemMaxUse=TBD
+Persistent journal:           yes / no / TBD
+----
+
+Then `sudo systemctl restart systemd-journald`.
 The optional Engine log file (`--log-file`) is bounded by the Engine itself (see "Diagnostic Logging (Initial Implementation)" in the Development and Operations chapter).
 
 === Resource Monitoring

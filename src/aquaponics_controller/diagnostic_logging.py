@@ -9,7 +9,10 @@ Implementation)" in the Development and Operations documentation.
 One process-wide configuration, made once by the composition root (``engine_main``):
 
 - every record goes to standard error; under systemd that is journald, whose own
-  configuration bounds what is kept (the Engine does not);
+  configuration bounds what is kept (the Engine does not). When standard error really is
+  a journald stream (``JOURNAL_STREAM`` names it), every line is prefixed with its syslog
+  priority (``<3>`` error, ``<4>`` warning, ``<6>`` info, ``<7>`` debug), so that
+  ``journalctl -p err`` finds failures, tracebacks included. Elsewhere lines are unchanged;
 - optionally also to a size-rotated file the Engine bounds itself (``--log-file``).
 
 Every record carries the Engine execution identifier (the same value as in the lifecycle
@@ -57,6 +60,16 @@ SUMMARY_MAX_CHARACTERS = 200
 
 STDERR_HANDLER_NAME = "stderr"
 FILE_HANDLER_NAME = "log-file"
+
+# syslog priorities journald understands as a "<N>" line prefix (sd-daemon.h).
+JOURNAL_PRIORITIES = {
+    logging.CRITICAL: 2,
+    logging.ERROR: 3,
+    logging.WARNING: 4,
+    logging.INFO: 6,
+    logging.DEBUG: 7,
+}
+JOURNAL_STREAM_VARIABLE = "JOURNAL_STREAM"
 
 LOG_FORMAT = "%(asctime)s.%(msecs)03dZ %(levelname)s %(subsystem)s exec=%(execution_id)s cycle=%(cycle)s %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -112,6 +125,43 @@ def build_formatter() -> logging.Formatter:
     return formatter
 
 
+def journal_priority(level: int) -> int:
+    """The syslog priority for a logging level: the priority of the nearest standard level at or below it."""
+    for threshold in (logging.CRITICAL, logging.ERROR, logging.WARNING, logging.INFO):
+        if level >= threshold:
+            return JOURNAL_PRIORITIES[threshold]
+    return JOURNAL_PRIORITIES[logging.DEBUG]
+
+
+class JournalPriorityFormatter(logging.Formatter):
+    """Prefixes EVERY line of a formatted record with its priority, so a multi-line record (a traceback)
+    keeps its severity in the journal: journald turns each line of a stream into its own entry."""
+
+    def __init__(self, inner: logging.Formatter):
+        super().__init__()
+        self._inner = inner
+
+    def format(self, record: logging.LogRecord) -> str:
+        prefix = f"<{journal_priority(record.levelno)}>"
+        return "\n".join(prefix + line for line in self._inner.format(record).split("\n"))
+
+
+def stderr_is_journal_stream(environment=None, stream=None) -> bool:
+    """Whether standard error is the journald stream named by ``JOURNAL_STREAM`` ("<device>:<inode>").
+
+    The variable alone is not enough: it is inherited by everything a service starts (and often by
+    terminal sessions), while standard error may meanwhile be a terminal, a pipe or a file.
+    """
+    environment = os.environ if environment is None else environment
+    stream = sys.stderr if stream is None else stream
+    try:
+        device, inode = (int(part) for part in environment[JOURNAL_STREAM_VARIABLE].split(":"))
+        status = os.fstat(stream.fileno())
+    except (KeyError, ValueError, OSError, AttributeError):
+        return False
+    return (status.st_dev, status.st_ino) == (device, inode)
+
+
 # ---------------------------------------------------------------------- failure-tolerant handlers
 
 
@@ -136,7 +186,7 @@ class FailureTolerantHandlerMixin:
             code = getattr(exc, "errno", None)
             del exc  # do not keep the exception (and its frames) alive
             line = (
-                f"aquaponics-engine: diagnostic log handler {self.get_name() or type(self).__name__} failed "
+                f"{_stderr_line_prefix}aquaponics-engine: diagnostic log handler {self.get_name() or type(self).__name__} failed "
                 f"({type_name}, errno {code if code is not None else '-'}); further failures are counted\n"
             )
             os.write(2, line.encode("ascii", "backslashreplace"))
@@ -264,6 +314,10 @@ def open_log_file(path: Path) -> BoundedRotatingFileHandler:
 
 _configured_handlers: list[FailureTolerantHandlerMixin] = []
 
+# "<4>" while standard error is a journald stream, so the handler-failure notice written straight to
+# file descriptor 2 is a warning in the journal too; empty otherwise.
+_stderr_line_prefix = ""
+
 
 def configure_logging(level_name: str, log_file: str | Path | None = None, execution_id: str | None = None) -> None:
     """Configure process-wide diagnostic logging. Called once, by the composition root.
@@ -272,12 +326,15 @@ def configure_logging(level_name: str, log_file: str | Path | None = None, execu
     A log file that cannot be opened is reported and logging continues on standard error only:
     a problem with diagnostic logging must not prevent the Engine from starting.
     """
+    global _stderr_line_prefix
     log_context.execution_id = execution_id
     formatter = build_formatter()
     context_filter = DiagnosticContextFilter()
 
     stderr_handler = FailureTolerantStreamHandler(sys.stderr)
     stderr_handler.set_name(STDERR_HANDLER_NAME)
+    under_journald = stderr_is_journal_stream()
+    _stderr_line_prefix = f"<{JOURNAL_PRIORITIES[logging.WARNING]}>" if under_journald else ""
     handlers: list[logging.Handler] = [stderr_handler]
 
     file_problem: str | None = None
@@ -294,6 +351,8 @@ def configure_logging(level_name: str, log_file: str | Path | None = None, execu
     for handler in handlers:
         handler.setFormatter(formatter)
         handler.addFilter(context_filter)
+    if under_journald:
+        stderr_handler.setFormatter(JournalPriorityFormatter(formatter))  # the log file keeps plain lines
     logging.basicConfig(level=level_name.upper(), handlers=handlers, force=True)
     _configured_handlers[:] = handlers
 

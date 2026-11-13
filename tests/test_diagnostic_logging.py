@@ -24,12 +24,15 @@ from aquaponics_controller.diagnostic_logging import (
     BoundedRotatingFileHandler,
     DiagnosticContextFilter,
     FailureTolerantStreamHandler,
+    JournalPriorityFormatter,
     RepeatedWarningReporter,
     build_formatter,
     configure_logging,
+    journal_priority,
     log_context,
     log_handler_failure_counts,
     sanitize_summary,
+    stderr_is_journal_stream,
 )
 from aquaponics_controller.engine import ExitStatus
 from aquaponics_controller.lifecycle_audit import read_lifecycle_records
@@ -782,3 +785,142 @@ def test_a_client_disconnect_storm_does_not_hide_individual_client_events(short_
         assert engine.log_text().count("disconnected before completing its request") == 5
     finally:
         engine.close()
+
+
+# ---------------------------------------------------------------- journald priorities (Issue #9, D9)
+
+
+def journal_variable_for(path) -> str:
+    status = os.stat(path)
+    return f"{status.st_dev}:{status.st_ino}"
+
+
+@pytest.mark.parametrize(
+    "level, priority",
+    [
+        (logging.CRITICAL, 2),
+        (logging.ERROR, 3),
+        (logging.WARNING, 4),
+        (logging.INFO, 6),
+        (logging.DEBUG, 7),
+        (logging.WARNING + 5, 4),  # a custom level takes the priority of the standard level below it
+        (logging.NOTSET, 7),
+    ],
+)
+def test_every_logging_level_maps_to_its_syslog_priority(level, priority):
+    assert journal_priority(level) == priority
+
+
+def test_every_line_of_a_multi_line_record_carries_the_priority():
+    formatter = JournalPriorityFormatter(build_formatter())
+    try:
+        raise RuntimeError("defect")
+    except RuntimeError:
+        import sys
+
+        record = logging.LogRecord("aquaponics_controller.engine", logging.ERROR, __file__, 1, "failed", (), sys.exc_info())
+
+    lines = formatter.format(record).split("\n")
+
+    assert len(lines) > 3  # message plus traceback
+    assert all(line.startswith("<3>") for line in lines)
+    assert lines[0].startswith("<3>20") and " ERROR - exec=- cycle=- failed" in lines[0]  # no context filter here
+
+
+def test_stderr_is_a_journal_stream_only_if_device_and_inode_match(short_directory):
+    stream_file = short_directory / "stream"
+    other_file = short_directory / "other"
+    stream_file.touch()
+    other_file.touch()
+    with open(stream_file, "w") as stream:
+        assert stderr_is_journal_stream({"JOURNAL_STREAM": journal_variable_for(stream_file)}, stream)
+        assert not stderr_is_journal_stream({"JOURNAL_STREAM": journal_variable_for(other_file)}, stream)
+        assert not stderr_is_journal_stream({}, stream)
+        assert not stderr_is_journal_stream({"JOURNAL_STREAM": "garbage"}, stream)
+        assert not stderr_is_journal_stream({"JOURNAL_STREAM": "1:2:3"}, stream)
+    assert not stderr_is_journal_stream({"JOURNAL_STREAM": journal_variable_for(stream_file)}, object())  # no fileno
+
+
+@pytest.fixture
+def stderr_into(short_directory, monkeypatch):
+    """A file that ``redirect()`` makes standard error (at the sys.stderr level); returns (path, redirect).
+
+    The redirection has to happen inside the test body: pytest's own output capture re-installs its
+    sys.stderr between fixture setup and the test call.
+    """
+    path = short_directory / "stderr.txt"
+    stream = open(path, "w")
+    yield path, lambda: monkeypatch.setattr("sys.stderr", stream)
+    stream.close()
+
+
+def test_under_journald_stderr_lines_carry_priorities_and_the_log_file_stays_plain(
+    short_directory, stderr_into, monkeypatch
+):
+    stderr_path, redirect = stderr_into
+    redirect()
+    monkeypatch.setenv("JOURNAL_STREAM", journal_variable_for(stderr_path))
+    log_file = short_directory / "logs" / "engine.log"
+    configure_logging("DEBUG", log_file, "exec-j")
+    engine_logger = logging.getLogger("aquaponics_controller.engine")
+
+    engine_logger.debug("debug line")
+    engine_logger.info("info line")
+    engine_logger.warning("warning line")
+    engine_logger.error("error line")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    stderr_lines = stderr_path.read_text().splitlines()
+    assert [line[:3] for line in stderr_lines] == ["<7>", "<6>", "<4>", "<3>"]
+    assert all(" exec=exec-j " in line for line in stderr_lines)
+    file_lines = log_file.read_text().splitlines()
+    assert [line.split(" ")[1] for line in file_lines] == ["DEBUG", "INFO", "WARNING", "ERROR"]
+    assert not any(line.startswith("<") for line in file_lines)
+
+
+def test_outside_journald_stderr_lines_are_unchanged_even_if_the_variable_is_inherited(
+    short_directory, stderr_into, monkeypatch
+):
+    stderr_path, redirect = stderr_into
+    redirect()
+    elsewhere = short_directory / "journal-elsewhere"
+    elsewhere.touch()
+    monkeypatch.setenv("JOURNAL_STREAM", journal_variable_for(elsewhere))  # e.g. inherited by a terminal
+    configure_logging("INFO", None, "exec-t")
+
+    logging.getLogger("aquaponics_controller.engine").error("error line")
+    logging.getLogger().handlers[0].flush()
+
+    assert stderr_path.read_text().startswith("20")  # a timestamp, no priority prefix
+
+
+def test_under_journald_a_handler_failure_notice_is_a_warning(stderr_into, monkeypatch, capfd):
+    stderr_path, redirect = stderr_into
+    redirect()
+    monkeypatch.setenv("JOURNAL_STREAM", journal_variable_for(stderr_path))
+    configure_logging("INFO", None, "exec-j")
+    handler = broken_handler()
+
+    handler.handle(make_record())
+
+    assert capfd.readouterr().err.startswith("<4>aquaponics-engine: diagnostic log handler broken failed")
+
+
+def test_the_engine_process_under_journald_marks_errors_and_warnings(short_directory):
+    stream_path = short_directory / "engine.log"  # EngineProcess captures standard error in this file
+    stream_path.touch()
+    engine = EngineProcess(short_directory, cycle_interval=0.2, environment={"JOURNAL_STREAM": journal_variable_for(stream_path)})
+    try:
+        engine.wait_until_running()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.connect(str(engine.endpoint))  # disconnects without a request: a WARNING
+        assert run_ape("-x", "--socket", str(engine.endpoint)).returncode == 0
+        assert engine.wait() == 0
+        lines = engine.log_text().splitlines()
+    finally:
+        engine.close()
+
+    assert lines and all(line[:3] in ("<6>", "<4>") for line in lines)
+    assert any(line.startswith("<4>") and "disconnected before completing its request" in line for line in lines)
+    assert any(line.startswith("<6>") and "Engine shutdown completed" in line for line in lines)

@@ -26,8 +26,17 @@ SHUTDOWN_TOLERANCE_SECONDS = 5.0
 def child_environment() -> dict:
     environment = dict(os.environ)
     environment["PYTHONPATH"] = SOURCE_DIRECTORY
-    # Never let a developer's configuration redirect a test to real endpoints or files.
-    for name in ("AQUAPONICS_ENGINE_SOCKET", "AQUAPONICS_LIFECYCLE_AUDIT_FILE"):
+    # Never let a developer's configuration redirect a test to real endpoints or files, and never let
+    # a test inherit a service manager's notification or journald settings (pytest itself may run
+    # inside a systemd unit or a terminal that inherited them).
+    for name in (
+        "AQUAPONICS_ENGINE_SOCKET",
+        "AQUAPONICS_LIFECYCLE_AUDIT_FILE",
+        "NOTIFY_SOCKET",
+        "WATCHDOG_USEC",
+        "WATCHDOG_PID",
+        "JOURNAL_STREAM",
+    ):
         environment.pop(name, None)
     return environment
 
@@ -45,7 +54,9 @@ def events_of(records: list[dict], execution_id: str | None = None) -> list[str]
 class EngineProcess:
     """An Engine running as a separate process, with its diagnostic log captured in a file."""
 
-    def __init__(self, directory: Path, *, cycle_interval: float = 0.1, name: str = "engine", extra_args=()):
+    def __init__(
+        self, directory: Path, *, cycle_interval: float = 0.1, name: str = "engine", extra_args=(), environment=None
+    ):
         self.endpoint = directory / "ipc" / "engine.sock"
         self.audit_file = directory / "audit" / "lifecycle.jsonl"
         self.log_file = directory / f"{name}.log"
@@ -63,7 +74,7 @@ class EngineProcess:
                 str(cycle_interval),
                 *extra_args,
             ],
-            env=child_environment(),
+            env={**child_environment(), **(environment or {})},
             stdout=self._log,
             stderr=subprocess.STDOUT,
         )

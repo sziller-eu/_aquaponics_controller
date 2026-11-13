@@ -8,15 +8,20 @@ This module assembles the Engine from explicit parts, configures diagnostic logg
 (see ``diagnostic_logging``) with the same execution identifier the Engine and the
 lifecycle audit receive, installs
 the SIGINT / SIGTERM handlers and maps the outcome to the process exit status. It
-contains no Engine logic. Only the real, non-hardware parts are composed here:
-there is no hardware to compose in this version.
+also reads, once, what the systemd service manager asked for (``NOTIFY_SOCKET``,
+``WATCHDOG_USEC``, ``WATCHDOG_PID``; see ``service_notify``) and refuses a cycle
+interval the service watchdog could not tolerate. It contains no Engine logic.
+Only the real, non-hardware parts are composed here: there is no hardware to
+compose in this version.
 
 Exit status: 0 controlled shutdown; 1 unexpected failure; 2 usage / configuration
-error; 3 another Engine already owns the endpoint; 4 shutdown carried out but
-cleanup failed.
+error (including a cycle interval too long for the service watchdog); 3 another
+Engine already owns the endpoint; 4 shutdown carried out but cleanup failed.
 """
 
 import argparse
+import logging
+import os
 import signal
 import sys
 import uuid
@@ -26,6 +31,9 @@ from .engine import Engine, EngineConfig, ExitStatus
 from .ipc_protocol import resolve_endpoint_path
 from .lifecycle_audit import LifecycleAudit, resolve_audit_path
 from .local_ingress import LocalAdministrativeIngress
+from .service_notify import ServiceManagerSettings, ServiceNotifier, check_cycle_interval_fits_watchdog
+
+logger = logging.getLogger(__name__)
 
 USAGE_ERROR = 2
 
@@ -42,8 +50,11 @@ def main(argv: list[str] | None = None) -> int:
         endpoint = resolve_endpoint_path(arguments.socket)
         audit_path = resolve_audit_path(arguments.audit_file)
         config = EngineConfig(cycle_interval_seconds=arguments.cycle_interval)
+        service_settings = ServiceManagerSettings.from_environment(os.environ, os.getpid())
+        check_cycle_interval_fits_watchdog(config.cycle_interval_seconds, service_settings.watchdog_seconds)
     except ValueError as exc:
-        print(f"aquaponics-engine: {exc}", file=sys.stderr)
+        # Reported on standard error through logging, so that under journald it carries error priority.
+        logger.error("configuration error, the Engine does not start: %s", exc)
         return USAGE_ERROR
 
     engine = Engine(
@@ -51,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         ingress=LocalAdministrativeIngress(endpoint),
         audit=LifecycleAudit(audit_path, execution_id),
+        service_notifier=ServiceNotifier(service_settings),
     )
     return int(run_with_signal_handling(engine))
 

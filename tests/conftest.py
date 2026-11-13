@@ -17,7 +17,8 @@ def short_directory():
 
 @pytest.fixture(autouse=True)
 def isolated_diagnostic_logging():
-    """Undo what a test does to process-wide logging: root handlers and level, and the correlation context."""
+    """Undo what a test does to process-wide logging: root handlers and level, the journald line
+    prefix, and the correlation context."""
     import logging
 
     from aquaponics_controller import diagnostic_logging
@@ -25,6 +26,7 @@ def isolated_diagnostic_logging():
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
     configured = list(diagnostic_logging._configured_handlers)
+    line_prefix = diagnostic_logging._stderr_line_prefix
     diagnostic_logging.log_context.reset()
     yield
     for handler in root.handlers:
@@ -33,4 +35,5 @@ def isolated_diagnostic_logging():
     root.handlers[:] = handlers
     root.setLevel(level)
     diagnostic_logging._configured_handlers[:] = configured
+    diagnostic_logging._stderr_line_prefix = line_prefix
     diagnostic_logging.log_context.reset()

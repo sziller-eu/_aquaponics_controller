@@ -462,6 +462,9 @@ Failures around external communication are kept in three classes:
 * a *protocol refusal* is answered with an error code; the Engine continues;
 * everything else is an *Engine failure* and follows the fail-stop path. Broad exception handling that could hide a genuine Engine fault is not permitted. A client whose request was being handled when the Engine failed may first receive a fixed `internal_error` answer, which never contains internal exception details.
 
+The same boundary applies to accepting connections: only transient resource exhaustion and a client that went away while queued are contained there.
+Any other failure to accept means the listener itself is broken and is an Engine failure, so that supervision restarts the Engine instead of letting it continue, still reporting a healthy control loop, without administrative access.
+
 The implementation is described in "Lifecycle and IPC Failure Handling" in the Development and Operations documentation.
 
 === Operating-Cycle Phases
@@ -501,7 +504,7 @@ One operating cycle passes through the following phases, in this order:
 
 |`FINALIZE_CYCLE`
 |Persist required cycle state and refresh the health heartbeat (see "Meaningful Health Heartbeat").
-|Placeholder. Persists nothing.
+|Placeholder. Persists nothing. The service watchdog heartbeat is sent by the Engine once this phase has returned and the cycle is counted.
 |===
 
 This order follows "Engine Outer Loop".
@@ -514,7 +517,7 @@ The limits are cooperative budgets, not pre-emptive deadlines: the Engine execut
 A phase shall not start further work once its budget is used up, and every operation within a phase shall bound its own duration.
 The Engine measures the duration of each phase with the monotonic clock (see "Time Handling") and reports a phase that exceeded its limit as a diagnostic warning.
 An overrun does not stop the Engine.
-A phase that blocks indefinitely cannot be detected reliably by the thread executing it; detecting that is the responsibility of external supervision and the watchdog (see "Process Supervision", "Meaningful Health Heartbeat" and "Hardware Watchdog").
+A phase that blocks indefinitely cannot be detected reliably by the thread executing it; detecting that is the responsibility of external supervision and the watchdog (see "Process Supervision", "Meaningful Health Heartbeat" and "Hardware Watchdog"). Under the service, the `systemd` watchdog detects it, because the cycle never completes and no heartbeat follows.
 The sum of the phase limits bounds the time a request waits for a cycle in progress, and shall remain well below the timeout used by local clients.
 
 Cycle scheduling::
@@ -1574,6 +1577,15 @@ The service shall support:
 
 Manual shell execution shall not be the normal production operating method.
 
+Initial implementation (Issue #9):: The Engine runs as the `systemd` service `aquaponics-engine.service` (`Type=notify`) under the dedicated `aquaponics` user, as described in "Engine Service (Initial Implementation)" in the Development and Operations documentation.
++
+* *A deliberate stop is never restarted.* An operator STOP (`ape -x`), `systemctl stop` and a handled `SIGTERM` all end with exit status 0, which the restart policy (`Restart=on-failure`) does not restart. A handled `SIGTERM` is treated as a deliberate stop, whoever sent it; it is still not proof of operator authorization.
+* *An unexpected termination is restarted*, within a bound: an Engine failure (exit status 1), a death by any signal (including `SIGHUP`, which the Engine does not handle; `RestartForceExitStatus=SIGHUP` makes systemd treat it as unexpected), a watchdog timeout and a start that never reported readiness. At most 5 starts within 300 s; then the service stays failed until an operator intervenes.
+* *Some exits are deliberately not restarted*: configuration errors (2), another Engine owning the endpoint (3) and a failed cleanup after a deliberate stop (4), because a restart cannot fix them.
+* Startup does not depend on the network, the API or a login session. The service has no network and no device access (`PrivateDevices=yes`); physical device access in a later milestone requires a separate security review.
++
+A restart recovers the process. It does not establish that the installation is safe, and the next execution does not yet detect that the previous one ended uncleanly (see "Restart and Startup Reconciliation").
+
 === Meaningful Health Heartbeat
 
 The existence of a Python process is not sufficient proof of health.
@@ -1600,6 +1612,15 @@ Heartbeat expires
         v
 Engine considered unhealthy
 ----
+
+Initial implementation (Issue #9):: The Engine sends the `systemd` watchdog heartbeat (`WATCHDOG=1`) from its main flow only, after an operating cycle has completed all its phases, at most once per quarter of the watchdog timeout; never from the idle wait, after a failed cycle or once shutdown has begun.
+`systemd` kills and restarts an Engine whose heartbeat stops for longer than the timeout (10 s).
+The heartbeat needs no thread: an Engine that hangs or deadlocks simply stops sending it.
++
+*What it means, and what it does not.* The heartbeat shows only that the single control loop completes operating cycles.
+While the phases other than request servicing are placeholders, it does not show that critical control work succeeds, that the administrative IPC is reachable, or that the physical installation is safe.
+Once real control work exists, the heartbeat shall follow its successful completion, as the diagram above requires.
+Treating IPC availability as part of Engine health is a separate decision (see "Known Limitations" under "Engine Service (Initial Implementation)").
 
 === Hardware Watchdog
 
@@ -1629,6 +1650,8 @@ automatic reboot
 Watchdog configuration shall be tested deliberately.
 
 A watchdog must not be used to hide an unexplained recurring failure.
+
+Status: only the `systemd` service watchdog is configured (see "Meaningful Health Heartbeat"). The Linux and hardware watchdogs are not configured yet.
 
 === Restart and Startup Reconciliation
 

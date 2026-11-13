@@ -735,6 +735,9 @@ Document:
 
 Logging must remain available after ordinary reboot where practical.
 
+The Engine writes its diagnostic logs to standard error and does not bound what is kept there; under `systemd`, retention and persistence are those of the journal configuration recorded here.
+The optional Engine log file (`--log-file`) is bounded by the Engine itself (see "Diagnostic Logging (Initial Implementation)" in the Development and Operations chapter).
+
 === Resource Monitoring
 
 Document how to inspect:

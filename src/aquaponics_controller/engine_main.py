@@ -1,9 +1,12 @@
 """Entry point and composition root of the Engine process.
 
     python -m aquaponics_controller.engine_main [--socket PATH] [--audit-file PATH] [--cycle-interval SECONDS]
+                                                [--log-level LEVEL] [--log-file PATH]
     aquaponics-engine ...                         (console script, after ``pip install -e .``)
 
-This module assembles the Engine from explicit parts, configures logging, installs
+This module assembles the Engine from explicit parts, configures diagnostic logging
+(see ``diagnostic_logging``) with the same execution identifier the Engine and the
+lifecycle audit receive, installs
 the SIGINT / SIGTERM handlers and maps the outcome to the process exit status. It
 contains no Engine logic. Only the real, non-hardware parts are composed here:
 there is no hardware to compose in this version.
@@ -14,12 +17,11 @@ cleanup failed.
 """
 
 import argparse
-import logging
 import signal
 import sys
-import time
 import uuid
 
+from .diagnostic_logging import configure_logging
 from .engine import Engine, EngineConfig, ExitStatus
 from .ipc_protocol import resolve_endpoint_path
 from .lifecycle_audit import LifecycleAudit, resolve_audit_path
@@ -31,7 +33,10 @@ USAGE_ERROR = 2
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     arguments = parser.parse_args(argv)
-    configure_logging(arguments.log_level)
+    # One identifier per execution, generated before anything is logged: diagnostic logs, the
+    # lifecycle audit and the Engine all receive this same value.
+    execution_id = uuid.uuid4().hex
+    configure_logging(arguments.log_level, arguments.log_file, execution_id)
 
     try:
         endpoint = resolve_endpoint_path(arguments.socket)
@@ -41,7 +46,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"aquaponics-engine: {exc}", file=sys.stderr)
         return USAGE_ERROR
 
-    execution_id = uuid.uuid4().hex
     engine = Engine(
         execution_id=execution_id,
         config=config,
@@ -58,15 +62,6 @@ def run_with_signal_handling(engine: Engine) -> ExitStatus:
     return engine.run()
 
 
-def configure_logging(level_name: str) -> None:
-    """Diagnostic logging to standard error with UTC timestamps. Retention and rotation belong to a later issue."""
-    formatter = logging.Formatter("%(asctime)sZ %(levelname)s %(name)s: %(message)s", "%Y-%m-%dT%H:%M:%S")
-    formatter.converter = time.gmtime
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(formatter)
-    logging.basicConfig(level=level_name.upper(), handlers=[handler], force=True)
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aquaponics-engine",
@@ -78,6 +73,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--cycle-interval", type=float, default=1.0, metavar="SECONDS", help="operating cycle interval (default 1.0)"
     )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--log-file",
+        metavar="PATH",
+        help="also write diagnostic logs to this size-rotated file (at most 25 MiB in total); default: standard error only",
+    )
     return parser
 
 
